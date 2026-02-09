@@ -281,15 +281,14 @@ def get_sudo_command():
     try:
         # Get parent process command line
         ppid = os.getppid()
-        with open(f'/proc/{ppid}/cmdline', 'r') as f:
-            cmdline = f.read().replace('\0', ' ').strip()
-            # Extract the actual command after sudo flags
-            parts = cmdline.split()
-            if 'sudo' in parts[0]:
-                # Find the actual command (skip sudo and its flags)
-                for i, part in enumerate(parts):
-                    if not part.startswith('-') and part != 'sudo':
-                        return ' '.join(parts[i:])
+        cmdline = subprocess.check_output(['ps', '-p', str(ppid), '-o', 'args=']).decode().strip()
+        # Extract the actual command after sudo flags
+        parts = cmdline.split()
+        if 'sudo' in parts[0]:
+            # Find the actual command (skip sudo and its flags)
+            for i, part in enumerate(parts):
+                if not part.startswith('-') and part != 'sudo':
+                    return ' '.join(parts[i:])
         return "Unknown command"
     except:
         return "Unknown command"
@@ -301,7 +300,7 @@ def show_confirmation_dialog():
     user = os.environ.get('USER', 'unknown')
     
     # Try Tkinter first
-    if HAS_GUI and 'DISPLAY' in os.environ:
+    if HAS_GUI and (sys.platform == 'darwin' or 'DISPLAY' in os.environ):
         try:
             root = tk.Tk()
             root.withdraw()  # Hide the main window
@@ -325,7 +324,7 @@ def show_confirmation_dialog():
             syslog.syslog(syslog.LOG_WARNING, f"Tkinter dialog failed: {e}")
     
     # Try GTK as fallback
-    if HAS_GTK and 'DISPLAY' in os.environ:
+    if HAS_GTK and (sys.platform == 'darwin' or 'DISPLAY' in os.environ):
         try:
             dialog = Gtk.MessageDialog(
                 parent=None,
@@ -350,7 +349,7 @@ def show_confirmation_dialog():
             syslog.syslog(syslog.LOG_WARNING, f"GTK dialog failed: {e}")
     
     # Fallback to zenity if available
-    if 'DISPLAY' in os.environ:
+    if sys.platform == 'darwin' or 'DISPLAY' in os.environ:
         try:
             message = f"Administrator privileges requested\\n\\n"
             message += f"User: {user}\\n"
@@ -368,7 +367,7 @@ def show_confirmation_dialog():
             pass
     
     # If GUI is not available, try TOTP confirmation
-    if 'DISPLAY' not in os.environ:
+    if sys.platform != 'darwin' and 'DISPLAY' not in os.environ:
         syslog.syslog(syslog.LOG_INFO, "No display available, trying TOTP confirmation")
         return prompt_totp_confirmation()
 
@@ -389,7 +388,7 @@ def check_security():
     # 2. Process validation
     try:
         ppid = os.getppid()
-        proc_name = open(f'/proc/{ppid}/comm').read().strip()
+        proc_name = os.path.basename(subprocess.check_output(['ps', '-p', str(ppid), '-o', 'comm=']).decode().strip())
         if proc_name not in ALLOWED_PARENT_PROCESSES:
             syslog.syslog(syslog.LOG_WARNING, f"Askpass called by unauthorized process: {proc_name}")
             return False
@@ -477,7 +476,7 @@ def ensure_ssh_key_loaded():
 def prompt_ssh_passphrase():
     """Prompt for SSH key passphrase using GUI"""
     # Try Tkinter first
-    if HAS_GUI and 'DISPLAY' in os.environ:
+    if HAS_GUI and (sys.platform == 'darwin' or 'DISPLAY' in os.environ):
         try:
             import tkinter.simpledialog as simpledialog
             root = tk.Tk()
@@ -495,7 +494,7 @@ def prompt_ssh_passphrase():
             pass
 
     # Try zenity
-    if 'DISPLAY' in os.environ:
+    if sys.platform == 'darwin' or 'DISPLAY' in os.environ:
         try:
             result = subprocess.run(
                 ['zenity', '--password', '--title=SSH Key Passphrase Required',
@@ -509,7 +508,7 @@ def prompt_ssh_passphrase():
             pass
 
     # Try kdialog
-    if 'DISPLAY' in os.environ:
+    if sys.platform == 'darwin' or 'DISPLAY' in os.environ:
         try:
             result = subprocess.run(
                 ['kdialog', '--password', f'Enter passphrase for {SSH_KEY}:'],
@@ -666,7 +665,7 @@ def main():
     # Log successful security check
     try:
         ppid = os.getppid()
-        proc_name = open(f'/proc/{ppid}/comm').read().strip()
+        proc_name = os.path.basename(subprocess.check_output(['ps', '-p', str(ppid), '-o', 'comm=']).decode().strip())
         command = get_sudo_command()
         syslog.syslog(syslog.LOG_INFO, f"Askpass approved for {proc_name} (pid {ppid}): {command}")
         

@@ -298,9 +298,37 @@ def show_confirmation_dialog():
     command = get_sudo_command()
     hostname = socket.gethostname()
     user = os.environ.get('USER', 'unknown')
-    
-    # Try Tkinter first
-    if HAS_GUI and (sys.platform == 'darwin' or 'DISPLAY' in os.environ):
+
+    # On macOS, prefer osascript — it gives a native dialog and avoids the
+    # Tcl/Tk SDK version mismatch that segfaults on macOS 26+.
+    if sys.platform == 'darwin':
+        try:
+            script = (
+                'display dialog '
+                '"Administrator privileges requested\\n\\n'
+                f'User: {user}\\n'
+                f'Host: {hostname}\\n'
+                f'Command: {command}\\n\\n'
+                'Do you want to allow this?" '
+                'with title "Sudo Authentication Required" '
+                'buttons {"Deny", "Allow"} default button "Deny" '
+                'with icon caution '
+                'giving up after 30'
+            )
+            result = subprocess.run(
+                ['osascript', '-e', script],
+                capture_output=True, text=True, timeout=35,
+            )
+            if result.returncode == 0 and 'Allow' in result.stdout:
+                return True
+            # User clicked Deny or dialog timed out
+            return False
+        except Exception as e:
+            syslog.syslog(syslog.LOG_WARNING, f"osascript dialog failed: {e}")
+            # Fall through to other methods
+
+    # Try Tkinter (Linux / non-macOS only — tkinter segfaults on macOS 26+)
+    if HAS_GUI and 'DISPLAY' in os.environ:
         try:
             root = tk.Tk()
             root.withdraw()  # Hide the main window
@@ -324,7 +352,7 @@ def show_confirmation_dialog():
             syslog.syslog(syslog.LOG_WARNING, f"Tkinter dialog failed: {e}")
     
     # Try GTK as fallback
-    if HAS_GTK and (sys.platform == 'darwin' or 'DISPLAY' in os.environ):
+    if HAS_GTK and 'DISPLAY' in os.environ:
         try:
             dialog = Gtk.MessageDialog(
                 parent=None,
@@ -349,7 +377,7 @@ def show_confirmation_dialog():
             syslog.syslog(syslog.LOG_WARNING, f"GTK dialog failed: {e}")
     
     # Fallback to zenity if available
-    if sys.platform == 'darwin' or 'DISPLAY' in os.environ:
+    if 'DISPLAY' in os.environ:
         try:
             message = f"Administrator privileges requested\\n\\n"
             message += f"User: {user}\\n"
@@ -367,7 +395,7 @@ def show_confirmation_dialog():
             pass
     
     # If GUI is not available, try TOTP confirmation
-    if sys.platform != 'darwin' and 'DISPLAY' not in os.environ:
+    if 'DISPLAY' not in os.environ:
         syslog.syslog(syslog.LOG_INFO, "No display available, trying TOTP confirmation")
         return prompt_totp_confirmation()
 

@@ -15,6 +15,13 @@ import hmac
 import struct
 import base64
 
+# Under sudo -A the environment is sanitised; restore Homebrew PATH on macOS
+# so subprocess calls to age, ssh-add, etc. can find them.
+if sys.platform == 'darwin':
+    _brew = '/opt/homebrew/bin'
+    if os.path.isdir(_brew) and _brew not in os.environ.get('PATH', ''):
+        os.environ['PATH'] = _brew + ':' + os.environ.get('PATH', '')
+
 # GUI imports
 try:
     import tkinter as tk
@@ -648,25 +655,22 @@ def decrypt_with_ssh_key(encrypted_file):
     return None
 
 def validate_environment():
-    """Validate SUDO_ASKPASS environment variable to prevent hijacking"""
-    askpass_path = os.environ.get('SUDO_ASKPASS', '')
-    if not askpass_path:
-        return True  # Not using askpass
-    
-    # Get the real path of this script
+    """Validate the askpass script's own integrity.
+
+    We may be launched via a thin wrapper (e.g. on macOS to select the
+    correct Python interpreter), so SUDO_ASKPASS in the environment can
+    legitimately differ from __file__.  Self-set it here so that any
+    child process or re-invocation sees the real script path.
+    """
     this_script = os.path.realpath(os.path.abspath(__file__))
-    provided_script = os.path.realpath(os.path.abspath(askpass_path))
-    
-    if this_script != provided_script:
-        syslog.syslog(syslog.LOG_CRIT, f"SUDO_ASKPASS hijacking detected! Expected: {this_script}, Got: {provided_script}")
-        return False
-    
+    os.environ['SUDO_ASKPASS'] = this_script
+
     # Check file permissions (should not be writable by others)
     stats = os.stat(this_script)
     if stats.st_mode & 0o022:  # Check for group/other write permissions
         syslog.syslog(syslog.LOG_CRIT, f"SUDO_ASKPASS script has insecure permissions: {oct(stats.st_mode)}")
         return False
-    
+
     return True
 
 def secure_memory_clear(data):

@@ -304,6 +304,8 @@ def show_confirmation_dialog():
     if sys.platform == 'darwin':
         try:
             script = (
+                'tell application "System Events"\n'
+                'activate\n'
                 'display dialog '
                 '"Administrator privileges requested\\n\\n'
                 f'User: {user}\\n'
@@ -313,7 +315,8 @@ def show_confirmation_dialog():
                 'with title "Sudo Authentication Required" '
                 'buttons {"Deny", "Allow"} default button "Deny" '
                 'with icon caution '
-                'giving up after 30'
+                'giving up after 30\n'
+                'end tell'
             )
             result = subprocess.run(
                 ['osascript', '-e', script],

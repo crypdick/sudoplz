@@ -15,8 +15,15 @@ import hmac
 import struct
 import base64
 
-# Under sudo -A the environment is sanitised; restore Homebrew PATH on macOS
-# so subprocess calls to age, ssh-add, etc. can find them.
+# Under sudo -A the environment is sanitised; restore variables that age needs.
+# SSH_AUTH_SOCK: required so age can decrypt via ssh-agent instead of prompting
+# for the SSH key passphrase on every invocation.
+if not os.environ.get('SSH_AUTH_SOCK'):
+    _sock = f"/run/user/{os.getuid()}/openssh_agent"
+    if os.path.exists(_sock):
+        os.environ['SSH_AUTH_SOCK'] = _sock
+
+# Restore Homebrew PATH on macOS so subprocess calls to age, ssh-add, etc. work.
 if sys.platform == 'darwin':
     _brew = '/opt/homebrew/bin'
     if os.path.isdir(_brew) and _brew not in os.environ.get('PATH', ''):

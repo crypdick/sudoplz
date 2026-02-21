@@ -439,8 +439,8 @@ def check_security():
         syslog.syslog(syslog.LOG_WARNING, "Askpass called without proper environment")
         return False
     
-    # 4. Time-based expiration check
-    if os.path.exists(SSH_ENCRYPTED_FILE):
+    # 4. Time-based expiration check (0 = no expiration)
+    if EXPIRATION_HOURS > 0 and os.path.exists(SSH_ENCRYPTED_FILE):
         age = time.time() - os.path.getmtime(SSH_ENCRYPTED_FILE)
         if age > EXPIRATION_HOURS * 3600:
             syslog.syslog(syslog.LOG_INFO, f"Password expired after {EXPIRATION_HOURS} hours")

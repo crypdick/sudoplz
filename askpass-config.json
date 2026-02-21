@@ -1,6 +1,31 @@
 {
-    "require_user_confirmation": true,
-    "allowed_paths": ["/"],
-    "expiration_hours": 24,
-    "allowed_processes": ["sudo", "claude-code", "code", "bash", "sh"]
+  "require_user_confirmation": true,
+  "allowed_paths": [
+    "/home/decal",
+    "/home/decal/",
+    "/tmp/",
+    "/tmp",
+    "/var/tmp/",
+    "/var/tmp"
+  ],
+  "expiration_hours": 0,
+  "allowed_processes": [
+    "sudo",
+    "bash",
+    "sh",
+    "zsh",
+    "fish",
+    "dash",
+    "brew",
+    "installer",
+    "code",
+    "cursor",
+    "claude-code",
+    "pyinfra",
+    "python",
+    "python3",
+    "Python"
+  ],
+  "max_attempts_per_hour": 120,
+  "lockout_minutes": 15
 }

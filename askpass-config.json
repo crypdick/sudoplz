@@ -8,7 +8,7 @@
     "/var/tmp/",
     "/var/tmp"
   ],
-  "expiration_hours": 0,
+  "expiration_hours": 168,
   "allowed_processes": [
     "sudo",
     "bash",

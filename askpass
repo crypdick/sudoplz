@@ -18,7 +18,7 @@ import base64
 # Under sudo -A the environment is sanitised; restore variables that age needs.
 # SSH_AUTH_SOCK: required so age can decrypt via ssh-agent instead of prompting
 # for the SSH key passphrase on every invocation.
-if not os.environ.get('SSH_AUTH_SOCK'):
+if sys.platform == 'linux' and not os.environ.get('SSH_AUTH_SOCK'):
     _sock = f"/run/user/{os.getuid()}/openssh_agent"
     if os.path.exists(_sock):
         os.environ['SSH_AUTH_SOCK'] = _sock

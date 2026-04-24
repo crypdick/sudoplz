@@ -425,8 +425,8 @@ def check_security():
         return False
     
     # 1. Path-based restriction
-    cwd = os.getcwd()
-    if not any(cwd.startswith(path) for path in ALLOWED_PATHS):
+    cwd = os.path.normpath(os.getcwd())
+    if not any(cwd == os.path.normpath(path) or cwd.startswith(path) for path in ALLOWED_PATHS):
         syslog.syslog(syslog.LOG_WARNING, f"Askpass called from unauthorized path: {cwd}")
         return False
     

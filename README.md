@@ -71,15 +71,15 @@ Encrypted files have 600 permissions. Key preference: ed25519 > ecdsa > rsa > ds
 
 ### Defense in depth
 
-Encryption alone doesn't cover every abuse path — anything running as your user can in principle request decryption. The askpass script checks several conditions on each invocation and refuses to decrypt if any fail:
+Encryption alone doesn't cover every abuse path — anything running as your user can in principle request decryption. The askpass script runs these checks on every invocation; any failure means no decryption:
 
 - **Caller path whitelist.** Only decrypts when the caller's working directory is on an allowlist (home, `/tmp`, etc.). Blocks invocations from unexpected locations like `/var/tmp/malicious`.
 - **Caller process whitelist.** Parent process must be on an allowlist (sudo, your shell, your IDE, your deploy tool). Keeps arbitrary binaries from invoking askpass directly.
 - **User confirmation.** A GUI dialog asks for approval on each decryption, so any sudo elevation you didn't initiate is visible and can be denied.
-- **Rate limiting.** Configurable max-attempts-per-hour and lockout window. Caps the blast radius of runaway scripts and brute-force attempts.
+- **Rate limiting.** Configurable max-attempts-per-hour and lockout window. Contains runaway scripts and brute-force attempts.
 - **Password expiration.** Stored passwords age out automatically (default: 1 week). A stolen blob becomes useless once it expires, even with your SSH key.
 
-Configure these in `~/.config/sudoplz/config.json` (an example is shipped as `askpass-config.json` in the repo — copy it and edit). The built-in defaults are reasonable for a personal workstation.
+Configure these in `~/.config/sudoplz/config.json` — an example is shipped as `askpass-config.json` in the repo; copy it and edit.
 
 ### Why age for Ed25519?
 
@@ -95,7 +95,7 @@ If your SSH key has a passphrase (recommended), the askpass tool will:
 
 You enter the passphrase once per session. After that, sudo commands only need the confirmation dialog. You need a running ssh-agent — most desktop environments start one on login; if not, `eval "$(ssh-agent -s)"` in your shell startup.
 
-This works under `sudo -A` despite the `SSH_AUTH_SOCK` stripping: the script finds your running ssh-agent and reconnects.
+This works under `sudo -A` even though sudo strips `SSH_AUTH_SOCK`: the script reconnects to your running ssh-agent.
 
 ## Commands
 

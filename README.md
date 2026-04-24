@@ -2,6 +2,16 @@
 
 A secure askpass implementation using SSH key encryption for non-interactive sudo operations.
 
+## About this fork
+
+This is a long-lived fork of [GlassOnTin/secure-askpass](https://github.com/GlassOnTin/secure-askpass). Upstream is currently dormant and hasn't absorbed the fork's patches, so this fork is the canonical source if any of the following matters to you:
+
+- **Works on macOS without crashing.** Upstream renders the confirmation dialog with a cross-platform Python GUI that's unreliable on recent macOS. This fork uses native AppleScript dialogs on macOS and keeps the Python dialog for Linux only, so the prompt just works regardless of platform.
+- **You don't re-type your SSH key passphrase on every sudo.** `sudo` strips `SSH_AUTH_SOCK` from the environment before calling askpass, which would otherwise force age-encrypted passwords to re-prompt for your SSH key passphrase on every invocation. This fork reconnects to your running ssh-agent automatically, so you unlock your key once per session and forget about it.
+- **Fewer shell-config rituals.** Sudo sanitizes `PATH` in ways that break shebang resolution for upstream's wrapper script. This fork handles PATH and `SUDO_ASKPASS` identity inside the `askpass` script directly, so installation is just "point `SUDO_ASKPASS` at `./askpass`" without extra glue.
+
+If you're coming from upstream, no config change needed — point `SUDO_ASKPASS` at this fork's `askpass` and everything behaves the same, plus the above fixes.
+
 ## Installation
 
 1. Clone this repository
@@ -50,9 +60,13 @@ Or use the test command:
 
 ## Security
 
-- Passwords are encrypted with your SSH keys using one of two methods:
-  - **Ed25519 keys**: Uses `age` encryption (requires age tool)
-  - **RSA/ECDSA/DSA keys**: Uses OpenSSL asymmetric encryption
+### Encryption at rest
+
+Passwords are encrypted with your SSH keys using one of two methods:
+- **Ed25519 keys**: Uses `age` encryption (requires age tool)
+- **RSA/ECDSA/DSA keys**: Uses OpenSSL asymmetric encryption
+
+Other details:
 - Supports multiple SSH key types (ed25519, ecdsa, rsa, dsa) with automatic detection
 - Keys are checked in order of preference: ed25519 > ecdsa > rsa > dsa
 - Encrypted files stored with 600 permissions:
@@ -60,6 +74,18 @@ Or use the test command:
   - RSA/ECDSA/DSA: `~/.sudo_askpass.ssh`
 - Falls back to system keyring if available
 - Refuses plain text storage
+
+### Defense in depth
+
+Encryption can't stop every abuse path — anything running as your user could in principle request decryption. To limit how a stored password can be misused, the askpass script checks several conditions on every invocation and refuses to decrypt if any of them fail:
+
+- **Caller path whitelist.** Only decrypts when the caller's working directory matches a whitelisted path (your home dir, `/tmp`, etc.). Prevents a rogue script executing from somewhere unexpected (e.g. `/var/tmp/malicious`) from silently triggering a sudo prompt behind your back.
+- **Caller process whitelist.** Only decrypts when the parent process is on an allowlist (sudo, your shell, your IDE, your deploy tool). Blocks arbitrary binaries from impersonating a legitimate caller by simply invoking askpass directly.
+- **User confirmation.** A GUI dialog always asks you to approve the decryption. Every sudo elevation is visible — if something triggers askpass that you didn't initiate, you see it and can deny.
+- **Rate limiting.** Configurable max-attempts-per-hour plus a lockout window. Defangs runaway scripts and brute-force attempts.
+- **Password expiration.** Stored passwords age out automatically (default: 1 week) and must be re-cached. Limits damage if your encrypted blob is ever stolen — even with your SSH key, a week-old stolen blob becomes useless.
+
+Configure any of these in `~/.config/secure-askpass/config.json` or the repo-local `askpass-config.json`. The shipped defaults are sensible for a personal workstation.
 
 ### Why age for Ed25519?
 
@@ -73,12 +99,14 @@ If your SSH key is password-protected (recommended!), the askpass tool will:
 3. Prompt for your SSH key passphrase via GUI dialog if needed
 4. Load the key into ssh-agent for the session
 
-**Workflow:** You only enter your SSH key passphrase once per session (via GUI), then sudo commands only require the confirmation dialog. No terminal interaction needed!
+**Workflow:** You enter your SSH key passphrase once per session. After that, sudo commands need only the confirmation dialog — no terminal interaction.
+
+This works cleanly even under `sudo -A`, which strips `SSH_AUTH_SOCK` from the environment: the askpass script detects your running ssh-agent and reconnects automatically, so you don't re-enter your passphrase on every sudo call.
 
 ## Commands
 
 ```bash
-./askpass-manager set        # Store password (GUI/terminal input)
+./askpass-manager set        # Store password (GUI/terminal input; expires per config, 1 week default)
 ./askpass-manager set-totp   # Store password with TOTP verification (headless)
 ./askpass-manager totp-setup # Set up TOTP for headless sessions
 ./askpass-manager get        # Check if password exists

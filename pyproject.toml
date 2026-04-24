@@ -5,9 +5,35 @@ description = "Give AI coding agents case-by-case sudo access via GUI approval, 
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
+authors = [
+    { name = "Ricardo Decal", email = "biz@ricardodecal.com" },
+]
+keywords = ["sudo", "askpass", "ssh", "ai-agents", "claude-code", "cursor", "security"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: System :: Systems Administration :: Authentication/Directory",
+    "Topic :: Utilities",
+]
 dependencies = [
     "keyring>=24",
 ]
+
+[project.urls]
+Homepage = "https://github.com/crypdick/sudoplz"
+Issues = "https://github.com/crypdick/sudoplz/issues"
+Source = "https://github.com/crypdick/sudoplz"
 
 [project.scripts]
 askpass = "sudoplz.askpass:main"

@@ -1,18 +1,28 @@
-# SSH Askpass Helper
+# secure-askpass
 
-A secure askpass implementation using SSH key encryption for non-interactive sudo operations.
+Give Claude Code, Cursor, and other AI coding agents the ability to run `sudo` — with case-by-case GUI approval, no passwordless sudo, no `/etc/sudoers` allowlists.
 
-## About this fork
+Your sudo password is encrypted with your SSH private key and only decrypted after you approve a dialog showing the exact command about to run. Deny the dialog and nothing happens.
 
-Long-lived fork of [GlassOnTin/secure-askpass](https://github.com/GlassOnTin/secure-askpass). Upstream is dormant and hasn't pulled these patches, so this fork is the canonical source if you need:
+## Why
 
-- **Working macOS dialogs.** Upstream's cross-platform Python GUI is unreliable on recent macOS. This fork uses native AppleScript dialogs on macOS.
-- **No SSH passphrase re-prompt on every sudo.** `sudo` strips `SSH_AUTH_SOCK`, which would otherwise force age-encrypted passwords to re-prompt on each call. This fork reconnects to your running ssh-agent instead.
-- **Less shell-config glue.** Sudo sanitizes `PATH`, which breaks shebang resolution in upstream's wrapper. This fork handles PATH and `SUDO_ASKPASS` identity inside `askpass` itself — install with `uv tool install .` and point `SUDO_ASKPASS` at the resulting binary.
+Coding agents can't handle interactive terminal prompts. Ask Claude Code to run `sudo apt install foo` and you get `sudo: Authentication failed`. The common workarounds all have problems:
+
+- **Passwordless sudo** gives the agent — and anything else running as your user — unrestricted root.
+- **`/etc/sudoers` allowlists** require predicting every command the agent will ever need. No case-by-case review.
+- **Manual copy-paste** is tedious and breaks the agent's flow.
+
+`secure-askpass` plugs into `sudo -A`, so the agent runs `sudo -A <command>`, you see a dialog with the exact command, and you click Allow or Deny. Works for any command without pre-declaring what's permitted.
+
+This threat model assumes a personal workstation with an encrypted disk and a passphrase-protected SSH key. Not appropriate for shared or production systems.
 
 ## Installation
 
-1. Clone the repo.
+1. **Use traditional `sudo`, not `sudo-rs`.** `sudo-rs` doesn't support askpass. Check with `sudo --version` — it should say "Sudo version 1.x.x". If you're on `sudo-rs`, switch:
+   ```bash
+   sudo update-alternatives --install /usr/bin/sudo sudo /usr/bin/sudo.ws 100
+   sudo update-alternatives --config sudo   # pick sudo.ws
+   ```
 2. Make sure you have an SSH key (ed25519, ecdsa, rsa, or dsa).
 3. For Ed25519 keys, install [`age`](https://github.com/FiloSottile/age):
    - Arch Linux: `sudo pacman -S age`
@@ -32,24 +42,17 @@ Long-lived fork of [GlassOnTin/secure-askpass](https://github.com/GlassOnTin/sec
    askpass-manager set
    ```
 
-## sudo-rs note
-
-`sudo-rs` doesn't support askpass. If you're running `sudo-rs`, configure `sudo.ws` as an alternative:
-
-```bash
-sudo update-alternatives --install /usr/bin/sudo sudo /usr/bin/sudo.ws 100
-# Adjust the priority if you have other sudo alternatives.
-# Switch back with: sudo update-alternatives --config sudo
-```
-
 ## Usage
 
+Your agent (or you) runs `sudo -A <command>`. A dialog pops up showing the command. You approve or deny.
+
 ```bash
-export SUDO_ASKPASS="$(which askpass)"
-sudo -A command
+sudo -A apt install foo
 ```
 
-Or test the integration:
+Gotcha: `sudo -n` explicitly disallows prompting and will never trigger askpass. Always use `-A`.
+
+Test the integration with:
 
 ```bash
 askpass-manager test
@@ -137,6 +140,14 @@ sudo -A command
 # Non-interactive — pass TOTP via environment
 TOTP="123456" sudo -A command
 ```
+
+## About this fork
+
+Long-lived fork of [GlassOnTin/secure-askpass](https://github.com/GlassOnTin/secure-askpass). Upstream is dormant, so this fork is the canonical source if you need:
+
+- **Working macOS dialogs** via native AppleScript — upstream's cross-platform Python GUI is unreliable on recent macOS.
+- **No SSH passphrase re-prompt on every sudo.** `sudo` strips `SSH_AUTH_SOCK`; this fork reconnects to your running ssh-agent so age-encrypted passwords decrypt without a re-prompt.
+- **Proper Python packaging.** Install via `uv tool install .`; deps and entry points managed by `pyproject.toml` instead of ad-hoc shebang scripts.
 
 ## License
 

@@ -1,4 +1,4 @@
-"""Shared helpers for askpass and askpass-manager."""
+"""Shared helpers for askpass and sudoplz."""
 
 from __future__ import annotations
 
@@ -14,11 +14,11 @@ import time
 from pathlib import Path
 from typing import Any
 
-SERVICE_NAME = "sudo-askpass"
+SERVICE_NAME = "sudoplz"
 USERNAME = "sudo"
 
 HOME = Path.home()
-CONFIG_DIR = HOME / ".config" / "secure-askpass"
+CONFIG_DIR = HOME / ".config" / "sudoplz"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 RATE_LIMIT_FILE = CONFIG_DIR / "rate_limit.json"
 AUDIT_LOG_FILE = CONFIG_DIR / "audit.log"
@@ -63,7 +63,7 @@ def find_ssh_key() -> tuple[Path | None, Path | None, str | None]:
 
 
 def load_config() -> dict[str, Any]:
-    """Merge DEFAULT_CONFIG with ~/.config/secure-askpass/config.json."""
+    """Merge DEFAULT_CONFIG with ~/.config/sudoplz/config.json."""
     config = dict(DEFAULT_CONFIG)
     if not CONFIG_FILE.exists():
         return config

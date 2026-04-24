@@ -1,9 +1,9 @@
-# SSH Askpass Helper Project Guidelines
+# sudoplz Project Guidelines
 
 ## Project Overview
-This is an SSH askpass helper service for secure sudo password storage using SSH key encryption. The project consists of:
-- `askpass` - Primary askpass script
-- `askpass-manager` - Management utility for the askpass service
+sudoplz gives AI coding agents (Claude Code, Cursor, etc.) the ability to run `sudo` commands with case-by-case GUI approval. The sudo password is encrypted with the user's SSH key. The project ships two entry points:
+- `askpass` - Invoked by `sudo -A` via `SUDO_ASKPASS`; performs security checks and prints the decrypted password on approval
+- `sudoplz` - Management CLI (set/get/clear/test/audit, plus TOTP for headless sessions)
 
 ## Development Guidelines
 
@@ -18,7 +18,7 @@ This is an SSH askpass helper service for secure sudo password storage using SSH
    - No unnecessary comments unless explicitly requested
 
 3. **Testing**:
-   - Test both `askpass` and `askpass-manager` components
+   - Test both `askpass` and `sudoplz` components
    - Verify SSH key encryption/decryption functionality
    - Ensure secure password handling
 

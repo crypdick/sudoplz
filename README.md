@@ -1,4 +1,4 @@
-# secure-askpass
+# sudoplz
 
 Give Claude Code, Cursor, and other AI coding agents the ability to run `sudo` — with case-by-case GUI approval, no passwordless sudo, no `/etc/sudoers` allowlists.
 
@@ -12,7 +12,7 @@ Coding agents can't handle interactive terminal prompts. Ask Claude Code to run 
 - **`/etc/sudoers` allowlists** require predicting every command the agent will ever need. No case-by-case review.
 - **Manual copy-paste** is tedious and breaks the agent's flow.
 
-`secure-askpass` plugs into `sudo -A`, so the agent runs `sudo -A <command>`, you see a dialog with the exact command, and you click Allow or Deny. Works for any command without pre-declaring what's permitted.
+`sudoplz` plugs into `sudo -A`, so the agent runs `sudo -A <command>`, you see a dialog with the exact command, and you click Allow or Deny. Works for any command without pre-declaring what's permitted.
 
 This threat model assumes a personal workstation with an encrypted disk and a passphrase-protected SSH key. Not appropriate for shared or production systems.
 
@@ -32,14 +32,14 @@ This threat model assumes a personal workstation with an encrypted disk and a pa
    ```bash
    uv tool install .
    ```
-   This puts `askpass` and `askpass-manager` on your PATH.
+   This puts `askpass` and `sudoplz` on your PATH.
 5. Point `SUDO_ASKPASS` at the installed binary (add to `~/.bashrc`, `~/.zshrc`, etc.):
    ```bash
    export SUDO_ASKPASS="$(which askpass)"
    ```
 6. Store your sudo password:
    ```bash
-   askpass-manager set
+   sudoplz set
    ```
 
 ## Usage
@@ -55,7 +55,7 @@ Gotcha: `sudo -n` explicitly disallows prompting and will never trigger askpass.
 Test the integration with:
 
 ```bash
-askpass-manager test
+sudoplz test
 ```
 
 ## Security
@@ -79,7 +79,7 @@ Encryption alone doesn't cover every abuse path — anything running as your use
 - **Rate limiting.** Configurable max-attempts-per-hour and lockout window. Caps the blast radius of runaway scripts and brute-force attempts.
 - **Password expiration.** Stored passwords age out automatically (default: 1 week). A stolen blob becomes useless once it expires, even with your SSH key.
 
-Configure these in `~/.config/secure-askpass/config.json` (an example is shipped as `askpass-config.json` in the repo — copy it and edit). The built-in defaults are reasonable for a personal workstation.
+Configure these in `~/.config/sudoplz/config.json` (an example is shipped as `askpass-config.json` in the repo — copy it and edit). The built-in defaults are reasonable for a personal workstation.
 
 ### Why age for Ed25519?
 
@@ -100,13 +100,13 @@ This works under `sudo -A` despite the `SSH_AUTH_SOCK` stripping: the script fin
 ## Commands
 
 ```bash
-askpass-manager set        # Store password (terminal prompt; expires per config, 1 week default)
-askpass-manager set-totp   # Store password with TOTP verification (headless)
-askpass-manager totp-setup # Set up TOTP for headless sessions
-askpass-manager get        # Check if password exists
-askpass-manager clear      # Remove password
-askpass-manager test       # Test sudo integration
-askpass-manager audit      # Show recent askpass usage
+sudoplz set        # Store password (terminal prompt; expires per config, 1 week default)
+sudoplz set-totp   # Store password with TOTP verification (headless)
+sudoplz totp-setup # Set up TOTP for headless sessions
+sudoplz get        # Check if password exists
+sudoplz clear      # Remove password
+sudoplz test       # Test sudo integration
+sudoplz audit      # Show recent askpass usage
 ```
 
 ## Headless/SSH usage with TOTP
@@ -116,7 +116,7 @@ For servers or SSH sessions without a display, authenticate with TOTP.
 ### Initial setup (run once from a GUI session)
 
 ```bash
-askpass-manager totp-setup
+sudoplz totp-setup
 ```
 
 Prints a TOTP secret and an `otpauth://` URL to add to your authenticator app.
@@ -124,7 +124,7 @@ Prints a TOTP secret and an `otpauth://` URL to add to your authenticator app.
 ### Setting a password from a headless session
 
 ```bash
-askpass-manager set-totp
+sudoplz set-totp
 ```
 
 Enter your 6-digit TOTP code, then your password.
@@ -143,7 +143,7 @@ TOTP="123456" sudo -A command
 
 ## About this fork
 
-Long-lived fork of [GlassOnTin/secure-askpass](https://github.com/GlassOnTin/secure-askpass). Upstream is dormant, so this fork is the canonical source if you need:
+Long-lived fork of [GlassOnTin/sudoplz](https://github.com/GlassOnTin/sudoplz). Upstream is dormant, so this fork is the canonical source if you need:
 
 - **Working macOS dialogs** via native AppleScript — upstream's cross-platform Python GUI is unreliable on recent macOS.
 - **No SSH passphrase re-prompt on every sudo.** `sudo` strips `SSH_AUTH_SOCK`; this fork reconnects to your running ssh-agent so age-encrypted passwords decrypt without a re-prompt.

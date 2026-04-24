@@ -1,4 +1,4 @@
-"""askpass-manager — CLI to store, inspect, and clear sudo passwords."""
+"""sudoplz — CLI to store, inspect, and clear sudo passwords."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from secure_askpass.core import (
+from sudoplz.core import (
     AGE_ENCRYPTED_FILE,
     AUDIT_LOG_FILE,
     SERVICE_NAME,
@@ -128,7 +128,7 @@ def cmd_set_totp(_args: argparse.Namespace) -> bool:
     secret = load_totp_secret(priv)
     if not secret:
         print(
-            "Error: TOTP not configured. Run 'askpass-manager totp-setup' first.",
+            "Error: TOTP not configured. Run 'sudoplz totp-setup' first.",
             file=sys.stderr,
         )
         return False
@@ -184,10 +184,10 @@ def cmd_totp_setup(_args: argparse.Namespace) -> bool:
     print("=" * 60)
     print(f"\nSecret: {secret}\n")
     print("Add to your authenticator app:")
-    print(f"  Account: {user}@{host} (sudo-askpass)")
+    print(f"  Account: {user}@{host} (sudoplz)")
     print(f"  Secret:  {secret}\n")
     print("Or scan this URL:")
-    print(f"  otpauth://totp/{user}@{host}:sudo-askpass?secret={secret}&issuer=secure-askpass")
+    print(f"  otpauth://totp/{user}@{host}:sudoplz?secret={secret}&issuer=sudoplz")
     print("\n" + "=" * 60)
     return True
 
@@ -275,7 +275,7 @@ def cmd_audit(_args: argparse.Namespace) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="askpass-manager",
+        prog="sudoplz",
         description="Manage secure sudo password storage.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)

@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from secure_askpass.core import (
+from sudoplz.core import (
     AGE_ENCRYPTED_FILE,
     AUDIT_LOG_FILE,
     RATE_LIMIT_FILE,
@@ -366,7 +366,7 @@ def write_audit_entry(ppid: int, proc: str | None, command: str) -> None:
 
 
 def main() -> None:
-    syslog.openlog("sudo-askpass")
+    syslog.openlog("sudoplz")
     repair_environment()
 
     if not validate_script_integrity():
@@ -412,7 +412,7 @@ def main() -> None:
             syslog.syslog(syslog.LOG_WARNING, f"Keyring lookup failed: {e}")
 
     print("Error: no password found in secure storage", file=sys.stderr)
-    print("Use 'askpass-manager set' to store the password securely", file=sys.stderr)
+    print("Use 'sudoplz set' to store the password securely", file=sys.stderr)
     syslog.syslog(syslog.LOG_ERR, "No password found in secure storage")
     sys.exit(1)
 

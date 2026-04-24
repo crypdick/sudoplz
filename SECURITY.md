@@ -68,6 +68,3 @@ Test the setup:
 # From within the project directory
 ./askpass-manager test
 ```
-
-## Backup
-Original askpass script backed up to: `askpass.backup`

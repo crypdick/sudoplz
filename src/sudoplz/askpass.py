@@ -86,19 +86,28 @@ def show_dialog(user: str, host: str, command: str) -> bool:
         return False
 
     try:
-        import tkinter as tk
-        from tkinter import messagebox
-
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        result = messagebox.askyesno(
-            "Sudo Authentication Required", message, icon=messagebox.WARNING
+        result = subprocess.run(
+            [
+                "zenity",
+                "--question",
+                "--title=Sudo Authentication Required",
+                f"--text={message}",
+                "--width=450",
+                "--ok-label=Allow",
+                "--cancel-label=Deny",
+            ],
+            capture_output=True,
+            timeout=60,
         )
-        root.destroy()
-        return bool(result)
-    except Exception as e:
-        syslog.syslog(syslog.LOG_WARNING, f"tkinter dialog failed: {e}")
+        return result.returncode == 0
+    except FileNotFoundError:
+        syslog.syslog(
+            syslog.LOG_ERR,
+            "zenity not found; install it (apt install zenity) or set up TOTP",
+        )
+        return False
+    except subprocess.TimeoutExpired:
+        syslog.syslog(syslog.LOG_WARNING, "zenity dialog timed out")
         return False
 
 
@@ -239,23 +248,41 @@ def check_security(config: dict[str, Any], identity: Path | None) -> bool:
 
 
 def prompt_passphrase(priv: Path) -> str | None:
-    """GUI prompt for SSH key passphrase (tkinter on Linux, tkinter on macOS)."""
-    if sys.platform != "darwin" and "DISPLAY" not in os.environ:
-        return None
-    try:
-        import tkinter as tk
-        from tkinter import simpledialog
-
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        passphrase = simpledialog.askstring(
-            "SSH Key Passphrase Required", f"Enter passphrase for {priv}:", show="*"
+    """GUI prompt for SSH key passphrase (osascript on macOS, zenity on Linux)."""
+    if sys.platform == "darwin":
+        script = (
+            f'display dialog "Enter passphrase for {priv}:" '
+            'default answer "" with hidden answer '
+            'with title "SSH Key Passphrase Required" '
+            'with icon caution'
         )
-        root.destroy()
-        return passphrase
-    except Exception as e:
-        syslog.syslog(syslog.LOG_WARNING, f"passphrase prompt failed: {e}")
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", script], capture_output=True, text=True, timeout=120
+            )
+            if result.returncode != 0:
+                return None
+            for part in result.stdout.split(", "):
+                if part.startswith("text returned:"):
+                    return part.removeprefix("text returned:").rstrip("\n")
+            return None
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            syslog.syslog(syslog.LOG_WARNING, f"osascript passphrase prompt failed: {e}")
+            return None
+
+    if "DISPLAY" not in os.environ:
+        return None
+
+    try:
+        result = subprocess.run(
+            ["zenity", "--password", "--title=SSH Key Passphrase Required"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        return result.stdout.rstrip("\n") if result.returncode == 0 else None
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        syslog.syslog(syslog.LOG_WARNING, f"zenity passphrase prompt failed: {e}")
         return None
 
 

@@ -24,10 +24,9 @@ This threat model assumes a personal workstation with an encrypted disk and a pa
    sudo update-alternatives --config sudo   # pick sudo.ws
    ```
 2. Make sure you have an SSH key (ed25519, ecdsa, rsa, or dsa).
-3. For Ed25519 keys, install [`age`](https://github.com/FiloSottile/age):
-   - Arch Linux: `sudo pacman -S age`
-   - Ubuntu/Debian: `sudo apt install age`
-   - macOS: `brew install age`
+3. Install system dependencies:
+   - [`age`](https://github.com/FiloSottile/age) — required if your SSH key is Ed25519 (the most common case today). `sudo pacman -S age` / `sudo apt install age` / `brew install age`.
+   - `zenity` on Linux — provides the GUI approval dialog. Pre-installed on most GNOME-based distros; `sudo apt install zenity` if missing. Not needed on macOS (uses AppleScript).
 4. Install the tools with [`uv`](https://docs.astral.sh/uv/):
    ```bash
    uv tool install .

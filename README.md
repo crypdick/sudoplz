@@ -141,13 +141,9 @@ sudo -A command
 TOTP="123456" sudo -A command
 ```
 
-## About this fork
+## Credits
 
-Long-lived fork of [GlassOnTin/sudoplz](https://github.com/GlassOnTin/sudoplz). Upstream is dormant, so this fork is the canonical source if you need:
-
-- **Working macOS dialogs** via native AppleScript — upstream's cross-platform Python GUI is unreliable on recent macOS.
-- **No SSH passphrase re-prompt on every sudo.** `sudo` strips `SSH_AUTH_SOCK`; this fork reconnects to your running ssh-agent so age-encrypted passwords decrypt without a re-prompt.
-- **Proper Python packaging.** Install via `uv tool install .`; deps and entry points managed by `pyproject.toml` instead of ad-hoc shebang scripts.
+The idea — an SSH-key-encrypted sudo password served via `SUDO_ASKPASS`, gated by a confirmation dialog — is from [GlassOnTin/secure-askpass](https://github.com/GlassOnTin/secure-askpass). That project is dormant; `sudoplz` is a substantially rewritten fork with the AI-agent framing, updated packaging, and code cleanup.
 
 ## License
 

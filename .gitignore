@@ -24,6 +24,11 @@ wheels/
 venv/
 env/
 ENV/
+.venv/
+
+# Tool caches
+.mypy_cache/
+.ruff_cache/
 
 # IDE
 .vscode/

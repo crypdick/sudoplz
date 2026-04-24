@@ -4,6 +4,8 @@ Give Claude Code, Cursor, and other AI coding agents the ability to run `sudo` â
 
 Your sudo password is encrypted with your SSH private key and only decrypted after you approve a dialog showing the exact command about to run. Deny the dialog and nothing happens.
 
+![Sudo approval dialog showing a command about to run, with Deny and Allow buttons](assets/screenshot.png)
+
 ## Why
 
 Coding agents can't handle interactive terminal prompts. Ask Claude Code to run `sudo apt install foo` and you get `sudo: Authentication failed`. The common workarounds all have problems:

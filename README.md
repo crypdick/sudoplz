@@ -27,11 +27,11 @@ This threat model assumes a personal workstation with an encrypted disk and a pa
 3. Install system dependencies:
    - [`age`](https://github.com/FiloSottile/age) — required if your SSH key is Ed25519 (the most common case today). `sudo pacman -S age` / `sudo apt install age` / `brew install age`.
    - `zenity` on Linux — provides the GUI approval dialog. Pre-installed on most GNOME-based distros; `sudo apt install zenity` if missing. Not needed on macOS (uses AppleScript).
-4. Install the tools with [`uv`](https://docs.astral.sh/uv/):
+4. Install from PyPI with [`uv`](https://docs.astral.sh/uv/):
    ```bash
-   uv tool install .
+   uv tool install sudoplz
    ```
-   This puts `askpass` and `sudoplz` on your PATH.
+   This puts `askpass` and `sudoplz` on your PATH. (For development: clone the repo and run `uv tool install .` instead.)
 5. Point `SUDO_ASKPASS` at the installed binary (add to `~/.bashrc`, `~/.zshrc`, etc.):
    ```bash
    export SUDO_ASKPASS="$(which askpass)"

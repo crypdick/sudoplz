@@ -1,6 +1,6 @@
 [project]
 name = "sudoplz"
-version = "0.2.0"
+version = "0.2.1"
 description = "Give AI coding agents case-by-case sudo access via GUI approval, with SSH-key-encrypted password storage"
 readme = "README.md"
 license = { text = "MIT" }

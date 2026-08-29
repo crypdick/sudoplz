@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from sudoplz.context import clear_pending, load_request_context
 from sudoplz.core import (
     AGE_ENCRYPTED_FILE,
     AUDIT_LOG_FILE,
@@ -35,6 +36,7 @@ from sudoplz.core import (
     process_name,
     verify_totp,
 )
+from sudoplz.dialog import has_display, show_dialog
 
 try:
     import keyring
@@ -46,69 +48,35 @@ except ImportError:
 
 def repair_environment() -> None:
     """Restore env vars that ``sudo -A`` strips but our subprocesses need."""
-    if sys.platform == "linux" and not os.environ.get("SSH_AUTH_SOCK"):
-        sock = f"/run/user/{os.getuid()}/openssh_agent"
-        if os.path.exists(sock):
-            os.environ["SSH_AUTH_SOCK"] = sock
+    if sys.platform == "linux":
+        uid = os.getuid()
+        runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+        if not os.environ.get("XDG_RUNTIME_DIR") and os.path.isdir(runtime):
+            os.environ["XDG_RUNTIME_DIR"] = runtime
+
+        if not os.environ.get("SSH_AUTH_SOCK"):
+            for sock in (
+                f"{runtime}/ssh-agent.socket",
+                f"{runtime}/openssh_agent",
+                f"{runtime}/ssh-agent",
+            ):
+                if os.path.exists(sock):
+                    os.environ["SSH_AUTH_SOCK"] = sock
+                    break
+
+        # Agent shells often lack DISPLAY/WAYLAND; Qt needs at least one.
+        if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+            if os.path.exists(f"{runtime}/wayland-0"):
+                os.environ["WAYLAND_DISPLAY"] = "wayland-0"
+            # Common Xwayland display on Plasma
+            for display in (":1", ":0"):
+                os.environ["DISPLAY"] = display
+                break
+
     if sys.platform == "darwin":
         brew = "/opt/homebrew/bin"
         if os.path.isdir(brew) and brew not in os.environ.get("PATH", ""):
             os.environ["PATH"] = f"{brew}:{os.environ.get('PATH', '')}"
-
-
-def show_dialog(user: str, host: str, command: str) -> bool:
-    """Prompt the user for approval. Return True on Allow."""
-    message = (
-        "Administrator privileges requested\n\n"
-        f"User: {user}\nHost: {host}\nCommand: {command}\n\n"
-        "Do you want to allow this?"
-    )
-
-    if sys.platform == "darwin":
-        escaped = message.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-        script = (
-            'tell application "System Events"\nactivate\n'
-            f'display dialog "{escaped}" '
-            'with title "Sudo Authentication Required" '
-            'buttons {"Deny", "Allow"} default button "Deny" '
-            "with icon caution giving up after 30\nend tell"
-        )
-        try:
-            result = subprocess.run(
-                ["osascript", "-e", script], capture_output=True, text=True, timeout=35
-            )
-            return result.returncode == 0 and "Allow" in result.stdout
-        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-            syslog.syslog(syslog.LOG_WARNING, f"osascript dialog failed: {e}")
-            return False
-
-    if "DISPLAY" not in os.environ:
-        return False
-
-    try:
-        result = subprocess.run(
-            [
-                "zenity",
-                "--question",
-                "--title=Sudo Authentication Required",
-                f"--text={message}",
-                "--width=450",
-                "--ok-label=Allow",
-                "--cancel-label=Deny",
-            ],
-            capture_output=True,
-            timeout=60,
-        )
-        return result.returncode == 0
-    except FileNotFoundError:
-        syslog.syslog(
-            syslog.LOG_ERR,
-            "zenity not found; install it (apt install zenity) or set up TOTP",
-        )
-        return False
-    except subprocess.TimeoutExpired:
-        syslog.syslog(syslog.LOG_WARNING, "zenity dialog timed out")
-        return False
 
 
 def prompt_totp(identity: Path, user: str, host: str, command: str) -> bool:
@@ -235,10 +203,14 @@ def check_security(config: dict[str, Any], identity: Path | None) -> bool:
         user = os.environ.get("USER", "unknown")
         host = socket.gethostname()
         command = parent_command(os.getppid())
-        if "DISPLAY" in os.environ or sys.platform == "darwin":
-            approved = show_dialog(user, host, command)
-        else:
-            approved = prompt_totp(identity, user, host, command) if identity else False
+        explain, body = load_request_context(command)
+        try:
+            if has_display() or sys.platform == "darwin":
+                approved = show_dialog(user, host, command, explain, body)
+            else:
+                approved = prompt_totp(identity, user, host, command) if identity else False
+        finally:
+            clear_pending()
         if not approved:
             syslog.syslog(syslog.LOG_WARNING, "Sudo access denied by user")
             return False
@@ -412,7 +384,10 @@ def main() -> None:
     write_audit_entry(ppid, process_name(ppid), parent_command(ppid))
 
     # Priority 1: age-encrypted file (Ed25519).
-    if AGE_ENCRYPTED_FILE.exists() and priv and has_age() and ensure_ssh_key_loaded(priv):
+    # age decrypts with the identity file directly; ssh-agent is best-effort
+    # (needed only when the key is passphrase-protected and not already usable).
+    if AGE_ENCRYPTED_FILE.exists() and priv and has_age():
+        ensure_ssh_key_loaded(priv)
         password = age_decrypt(AGE_ENCRYPTED_FILE.read_bytes(), priv)
         if password:
             print(password)

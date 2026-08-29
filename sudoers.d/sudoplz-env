@@ -1,0 +1,2 @@
+# Keep agent-supplied context visible to askpass under env_reset.
+Defaults env_keep += "SUDOPLZ_EXPLAIN SUDOPLZ_SCRIPT_BODY SUDOPLZ_SCRIPT"

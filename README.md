@@ -2,9 +2,9 @@
 
 Give Claude Code, Cursor, and other AI coding agents the ability to run `sudo` — with case-by-case GUI approval, no passwordless sudo, no `/etc/sudoers` allowlists.
 
-Your sudo password is encrypted with your SSH private key and only decrypted after you approve a dialog showing the exact command about to run. Deny the dialog and nothing happens.
+Your sudo password is encrypted with your SSH private key and only decrypted after you approve a dialog showing **why** elevation is needed and the **full command** about to run (not just a truncated argv). Deny the dialog and nothing happens.
 
-![Sudo approval dialog showing a command about to run, with Deny and Allow buttons](assets/screenshot.png)
+![Sudo approval dialog showing explanation and command body, with Deny and Allow buttons](assets/screenshot.png)
 
 ## Why
 
@@ -28,8 +28,8 @@ This threat model assumes a personal workstation with an encrypted disk and a pa
 2. Make sure you have an SSH key (ed25519, ecdsa, rsa, or dsa).
 3. Install system dependencies:
    - [`age`](https://github.com/FiloSottile/age) — required if your SSH key is Ed25519 (the most common case today). `sudo pacman -S age` / `sudo apt install age` / `brew install age`.
-   - `zenity` on Linux — provides the GUI approval dialog. Pre-installed on most GNOME-based distros; `sudo apt install zenity` if missing. Not needed on macOS (uses AppleScript).
-4. Install from PyPI with [`uv`](https://docs.astral.sh/uv/):
+   - On Linux, the approval UI uses **PySide6** (installed with the tool). `zenity` remains a fallback if Qt is unavailable. Not needed on macOS (uses AppleScript).
+4. Install with [`uv`](https://docs.astral.sh/uv/):
    ```bash
    uv tool install sudoplz
    ```
@@ -38,20 +38,41 @@ This threat model assumes a personal workstation with an encrypted disk and a pa
    ```bash
    export SUDO_ASKPASS="$(which askpass)"
    ```
-6. Store your sudo password:
+6. So agent context survives sudo's `env_reset`, install the bundled sudoers drop-in once:
+   ```bash
+   sudo install -m 0440 sudoers.d/sudoplz-env /etc/sudoers.d/sudoplz-env
+   sudo visudo -cf /etc/sudoers.d/sudoplz-env
+   ```
+   (Keeps `SUDOPLZ_EXPLAIN`, `SUDOPLZ_SCRIPT_BODY`, and `SUDOPLZ_SCRIPT`.)
+7. Store your sudo password:
    ```bash
    sudoplz set
    ```
 
 ## Usage
 
-Your agent (or you) runs `sudo -A <command>`. A dialog pops up showing the command. You approve or deny.
+Your agent (or you) runs `sudo -A <command>`. Before that, set what the dialog should show:
+
+| Variable | Meaning |
+|----------|---------|
+| `SUDOPLZ_EXPLAIN` | One or two sentences — why root is needed |
+| `SUDOPLZ_SCRIPT_BODY` | Full command text (include heredoc/script bodies; not just `python3 -`) |
+| `SUDOPLZ_SCRIPT` | Optional path to a file containing that text (prefer for large bodies) |
 
 ```bash
-sudo -A apt install foo
+export SUDOPLZ_EXPLAIN='Reload keyd after editing input-shortcuts.conf.'
+export SUDOPLZ_SCRIPT_BODY='keyd reload'
+sudo -A keyd reload
 ```
 
-Gotcha: `sudo -n` explicitly disallows prompting and will never trigger askpass. Always use `-A`.
+The dialog shows user/host, the explanation, and a scrollable **Command** panel with the body above. If those env vars are missing, the panel falls back to what `ps` reports for the sudo parent (often incomplete for heredocs).
+
+As a fallback when env is stripped, askpass also reads `$XDG_RUNTIME_DIR/sudoplz/pending.json` (`{explain, body, created_at}`, mode `0600`) and clears it after the dialog.
+
+Gotchas:
+
+- `sudo -n` explicitly disallows prompting and will never trigger askpass. Always use `-A`.
+- Each `sudo -A` opens its own dialog — batch root work in one `sudo -A bash -c '…'` when you can.
 
 Test the integration with:
 
@@ -76,7 +97,7 @@ Encryption alone doesn't cover every abuse path — anything running as your use
 
 - **Caller path whitelist.** Only decrypts when the caller's working directory is on an allowlist (home, `/tmp`, etc.). Blocks invocations from unexpected locations like `/var/tmp/malicious`.
 - **Caller process whitelist.** Parent process must be on an allowlist (sudo, your shell, your IDE, your deploy tool). Keeps arbitrary binaries from invoking askpass directly.
-- **User confirmation.** A GUI dialog asks for approval on each decryption, so any sudo elevation you didn't initiate is visible and can be denied.
+- **User confirmation.** A GUI dialog asks for approval on each decryption (explanation + full command body when provided), so any sudo elevation you didn't initiate is visible and can be denied. On Linux the dialog is PySide6; stdout/stderr are redirected while it runs so Qt cannot corrupt the password sudo reads from askpass.
 - **Rate limiting.** Configurable max-attempts-per-hour and lockout window. Contains runaway scripts and brute-force attempts.
 - **Password expiration.** Stored passwords age out automatically (default: 1 week). A stolen blob becomes useless once it expires, even with your SSH key.
 
@@ -96,7 +117,7 @@ If your SSH key has a passphrase (recommended), the askpass tool will:
 
 You enter the passphrase once per session. After that, sudo commands only need the confirmation dialog. You need a running ssh-agent — most desktop environments start one on login; if not, `eval "$(ssh-agent -s)"` in your shell startup.
 
-This works under `sudo -A` even though sudo strips `SSH_AUTH_SOCK`: the script reconnects to your running ssh-agent.
+This works under `sudo -A` even though sudo strips `SSH_AUTH_SOCK`: the script reconnects to your running ssh-agent (including common sockets such as `$XDG_RUNTIME_DIR/ssh-agent.socket`).
 
 ## Commands
 

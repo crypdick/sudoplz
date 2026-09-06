@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
 import hmac
 import json
 import os
 import struct
 import subprocess
-import syslog
+import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TypedDict, cast
 
 SERVICE_NAME = "sudoplz"
 USERNAME = "sudo"
@@ -27,14 +30,17 @@ TOTP_SECRET_FILE = CONFIG_DIR / "totp_secret.enc"
 SSH_ENCRYPTED_FILE = HOME / ".sudo_askpass.ssh"
 AGE_ENCRYPTED_FILE = HOME / ".sudo_askpass.age"
 
-SSH_KEY_CANDIDATES: list[tuple[str, str]] = [
-    ("id_ed25519", "Ed25519"),
-    ("id_ecdsa", "ECDSA"),
-    ("id_rsa", "RSA"),
-    ("id_dsa", "DSA"),
-]
 
-DEFAULT_CONFIG: dict[str, Any] = {
+class Config(TypedDict):
+    require_user_confirmation: bool
+    allowed_paths: list[str]
+    expiration_hours: int
+    allowed_processes: list[str]
+    max_attempts_per_hour: int
+    lockout_minutes: int
+
+
+DEFAULT_CONFIG: Config = {
     "require_user_confirmation": True,
     "allowed_paths": [str(HOME), "/tmp/"],
     "expiration_hours": 168,
@@ -44,35 +50,53 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
-def has_age() -> bool:
+def load_config() -> Config:
+    """Load policy, rejecting malformed settings before evaluating any guard."""
     try:
-        return subprocess.run(["age", "--version"], capture_output=True).returncode == 0
+        raw = json.loads(CONFIG_FILE.read_text())
     except FileNotFoundError:
-        return False
+        raw = {}
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Cannot read policy at {CONFIG_FILE}") from exc
+    if not isinstance(raw, dict) or raw.keys() - DEFAULT_CONFIG.keys():
+        raise ValueError("Config must be an object containing only known settings")
+    config = {**DEFAULT_CONFIG, **raw}
+    if type(config["require_user_confirmation"]) is not bool:
+        raise ValueError("require_user_confirmation must be true or false")
+    for name in ("expiration_hours", "max_attempts_per_hour", "lockout_minutes"):
+        value = config[name]
+        minimum = 0 if name == "expiration_hours" else 1
+        if type(value) is not int or value < minimum:
+            raise ValueError(f"{name} must be an integer >= {minimum}")
+    for name in ("allowed_paths", "allowed_processes"):
+        value = config[name]
+        if not isinstance(value, list) or any(not isinstance(x, str) or not x for x in value):
+            raise ValueError(f"{name} must be a list of nonempty strings")
+    if any(not os.path.isabs(path) for path in config["allowed_paths"]):
+        raise ValueError("allowed_paths must contain absolute paths")
+    return cast(Config, config)
 
 
-def find_ssh_key() -> tuple[Path | None, Path | None, str | None]:
-    """Return (private, public, type) of the first available SSH keypair."""
-    ssh_dir = HOME / ".ssh"
-    for stem, key_type in SSH_KEY_CANDIDATES:
-        priv = ssh_dir / stem
-        pub = ssh_dir / f"{stem}.pub"
-        if priv.exists() and pub.exists():
-            return priv, pub, key_type
-    return None, None, None
+@contextmanager
+def file_lock(path: Path) -> Iterator[None]:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+    with os.fdopen(fd, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
 
 
-def load_config() -> dict[str, Any]:
-    """Merge DEFAULT_CONFIG with ~/.config/sudoplz/config.json."""
-    config = dict(DEFAULT_CONFIG)
-    if not CONFIG_FILE.exists():
-        return config
+def atomic_write(path: Path, data: bytes) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=path.parent)
     try:
-        with CONFIG_FILE.open() as f:
-            config.update(json.load(f))
-    except (OSError, json.JSONDecodeError) as e:
-        syslog.syslog(syslog.LOG_WARNING, f"Ignoring malformed config {CONFIG_FILE}: {e}")
-    return config
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 # TOTP (RFC 6238, SHA-1, 30s step, 6 digits).
@@ -97,57 +121,6 @@ def verify_totp(secret: str, provided: str, window: int = 1) -> bool:
         if hmac.compare_digest(provided, totp_code(secret, offset)):
             return True
     return False
-
-
-# age wrappers (Ed25519 path).
-
-
-def age_encrypt(data: str, recipient_pub: Path) -> bytes | None:
-    if not has_age():
-        return None
-    result = subprocess.run(
-        ["age", "-R", str(recipient_pub), "-a"],
-        input=data.encode(),
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        syslog.syslog(syslog.LOG_ERR, f"age encrypt failed: {result.stderr.decode().strip()}")
-        return None
-    return result.stdout
-
-
-def age_decrypt(encrypted: bytes, identity: Path) -> str | None:
-    if not has_age():
-        return None
-    result = subprocess.run(
-        ["age", "-d", "-i", str(identity)],
-        input=encrypted,
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        syslog.syslog(syslog.LOG_ERR, f"age decrypt failed: {result.stderr.decode().strip()}")
-        return None
-    return result.stdout.decode().strip()
-
-
-def load_totp_secret(identity: Path) -> str | None:
-    if not TOTP_SECRET_FILE.exists():
-        return None
-    try:
-        return age_decrypt(TOTP_SECRET_FILE.read_bytes(), identity)
-    except OSError as e:
-        syslog.syslog(syslog.LOG_ERR, f"Could not read TOTP secret: {e}")
-        return None
-
-
-def save_totp_secret(secret: str, recipient_pub: Path) -> bool:
-    encrypted = age_encrypt(secret, recipient_pub)
-    if encrypted is None:
-        return False
-    TOTP_SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TOTP_SECRET_FILE.write_bytes(encrypted)
-    TOTP_SECRET_FILE.chmod(0o600)
-    return True
 
 
 def process_name(pid: int) -> str | None:

@@ -27,6 +27,7 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
+    "cryptography[ssh]>=42",
     "keyring>=24",
 ]
 

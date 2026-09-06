@@ -2,7 +2,7 @@
 
 Give Claude Code, Cursor, and other AI coding agents the ability to run `sudo` — with case-by-case GUI approval, no passwordless sudo, no `/etc/sudoers` allowlists.
 
-Your sudo password is encrypted with your SSH private key and only decrypted after you approve a dialog showing the exact command about to run. Deny the dialog and nothing happens.
+Your sudo password is encrypted to your SSH public key and only decrypted after you approve a dialog showing the exact command about to run. Deny the dialog and nothing happens.
 
 ![Sudo approval dialog showing a command about to run, with Deny and Allow buttons](assets/screenshot.png)
 
@@ -25,9 +25,9 @@ This threat model assumes a personal workstation with an encrypted disk and a pa
    sudo update-alternatives --install /usr/bin/sudo sudo /usr/bin/sudo.ws 100
    sudo update-alternatives --config sudo   # pick sudo.ws
    ```
-2. Make sure you have an SSH key (ed25519, ecdsa, rsa, or dsa).
+2. Make sure you have an Ed25519 or RSA SSH key. ECDSA and DSA keys are not supported.
 3. Install system dependencies:
-   - [`age`](https://github.com/FiloSottile/age) — required if your SSH key is Ed25519 (the most common case today). `sudo pacman -S age` / `sudo apt install age` / `brew install age`.
+   - [`age`](https://github.com/FiloSottile/age) — required for SSH-backed password storage and TOTP. `sudo pacman -S age` / `sudo apt install age` / `brew install age`.
    - `zenity` on Linux — provides the GUI approval dialog. Pre-installed on most GNOME-based distros; `sudo apt install zenity` if missing. Not needed on macOS (uses AppleScript).
 4. Install from PyPI with [`uv`](https://docs.astral.sh/uv/):
    ```bash
@@ -63,12 +63,22 @@ sudoplz test
 
 ### Encryption at rest
 
-Passwords are encrypted with your SSH key:
+New passwords use `age` encryption with an Ed25519 or RSA SSH key. The encrypted
+payload, original key path, and creation time are stored together in
+`~/.config/sudoplz/credential.json` with 600 permissions. Key preference for new
+credentials is Ed25519, then RSA. Adding another key does not change how an
+existing credential is decrypted.
 
-- **Ed25519**: `age` encryption, stored at `~/.sudo_askpass.age`
-- **RSA/ECDSA/DSA**: OpenSSL asymmetric encryption, stored at `~/.sudo_askpass.ssh`
+Without an SSH key, passwords use the system keyring with creation-time metadata
+in the same credential file. A decryption failure never falls back to an older
+password. Replacement and clearing retire previous storage; an empty record
+prevents legacy credentials from being rediscovered after clearing.
 
-Encrypted files have 600 permissions. Key preference: ed25519 > ecdsa > rsa > dsa. Falls back to the system keyring if available. Refuses plain text storage.
+Existing `~/.sudo_askpass.age` and RSA `~/.sudo_askpass.ssh` credentials are imported
+on first use, preserving their original modification time. If both exist, the
+newest file is selected. Legacy RSA keys can use OpenSSH or PEM format. A legacy
+keyring entry has no reliable creation time: run `sudoplz set` again to use it with
+expiration enabled. Keep the original SSH key available during migration.
 
 ### Defense in depth
 
@@ -78,9 +88,9 @@ Encryption alone doesn't cover every abuse path — anything running as your use
 - **Caller process whitelist.** Parent process must be on an allowlist (sudo, your shell, your IDE, your deploy tool). Keeps arbitrary binaries from invoking askpass directly.
 - **User confirmation.** A GUI dialog asks for approval on each decryption, so any sudo elevation you didn't initiate is visible and can be denied.
 - **Rate limiting.** Configurable max-attempts-per-hour and lockout window. Contains runaway scripts and brute-force attempts.
-- **Password expiration.** Stored passwords age out automatically (default: 1 week). A stolen blob becomes useless once it expires, even with your SSH key.
+- **Password expiration.** Retrieval is refused after the configured age (default: 1 week), including keyring credentials. Expiration does not destroy stored data or revoke stolen copies; use `sudoplz clear` to remove stored credentials.
 
-Configure these in `~/.config/sudoplz/config.json` — an example is shipped as `askpass-config.json` in the repo; copy it and edit.
+Configure these in `~/.config/sudoplz/config.json` — an example is shipped as `askpass-config.json` in the repo; copy it and edit. Unknown settings, invalid types, and invalid ranges are rejected; malformed policy never silently falls back to defaults.
 
 ### Why age for Ed25519?
 
@@ -88,15 +98,16 @@ Ed25519 is a signing algorithm (EdDSA), not encryption. OpenSSL handles RSA encr
 
 ### SSH key unlocking
 
-If your SSH key has a passphrase (recommended), the askpass tool will:
+Passphrase-protected SSH keys are unlocked in memory using `cryptography[ssh]`.
+Askpass requests the passphrase through a hidden GUI prompt, or a hidden terminal
+prompt in headless sessions. The decrypted identity is piped to age; it is never
+written to a temporary key file or placed in command arguments.
 
-1. Check whether the key is loaded in ssh-agent
-2. Prompt for the passphrase via GUI if it isn't
-3. Load the key into ssh-agent for the session
-
-You enter the passphrase once per session. After that, sudo commands only need the confirmation dialog. You need a running ssh-agent — most desktop environments start one on login; if not, `eval "$(ssh-agent -s)"` in your shell startup.
-
-This works under `sudo -A` even though sudo strips `SSH_AUTH_SOCK`: the script reconnects to your running ssh-agent.
+Unlocking is per invocation. When TOTP and the password use the same identity,
+askpass prompts once during that invocation. There is no session-wide passphrase
+cache and no ssh-agent requirement: [age does not support ssh-agent](https://github.com/FiloSottile/age#ssh-keys).
+A fully non-interactive session cannot unlock a passphrase-protected key. Supplying
+`TOTP` authorizes the request but does not unlock the SSH key.
 
 ## Commands
 
@@ -107,6 +118,7 @@ sudoplz totp-setup # Set up TOTP for headless sessions
 sudoplz get        # Check if password exists
 sudoplz clear      # Remove password
 sudoplz test       # Test sudo integration
+sudoplz config --show  # View validated policy
 sudoplz audit      # Show recent askpass usage
 ```
 
@@ -141,6 +153,18 @@ sudo -A command
 # Non-interactive — pass TOTP via environment
 TOTP="123456" sudo -A command
 ```
+
+## Development checks
+
+Install `age`, `ssh-keygen`, and `openssl`, then run:
+
+```bash
+uv run --group dev ruff check .
+uv run --group dev mypy src
+uv run python -m unittest discover -s tests -v
+```
+
+Tests use temporary SSH keys, dummy credentials, and an in-memory keyring.
 
 ## Credits
 

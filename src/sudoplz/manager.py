@@ -10,98 +10,30 @@ import shutil
 import socket
 import subprocess
 import sys
-import tempfile
+import warnings
 from datetime import datetime
 from pathlib import Path
 
+import keyring
+
+from sudoplz import credentials
 from sudoplz.core import (
-    AGE_ENCRYPTED_FILE,
     AUDIT_LOG_FILE,
-    CONFIG_DIR,
     CONFIG_FILE,
-    SERVICE_NAME,
-    SSH_ENCRYPTED_FILE,
-    USERNAME,
-    age_encrypt,
-    find_ssh_key,
+    atomic_write,
     generate_totp_secret,
-    has_age,
     load_config,
-    load_totp_secret,
-    save_totp_secret,
     verify_totp,
 )
 
-try:
-    import keyring
 
-    HAS_KEYRING = True
-except ImportError:
-    HAS_KEYRING = False
-
-
-def encrypt_with_openssl(password: str, pub: Path) -> bytes | None:
-    """RSA / ECDSA / DSA path: convert SSH pubkey to PEM, encrypt with pkeyutl."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as f:
-        temp_pem = f.name
-    try:
-        os.chmod(temp_pem, 0o600)
-        extract = subprocess.run(
-            ["ssh-keygen", "-e", "-m", "PKCS8", "-f", str(pub)],
-            capture_output=True,
-            text=True,
-        )
-        if extract.returncode != 0:
-            return None
-        Path(temp_pem).write_text(extract.stdout)
-        result = subprocess.run(
-            ["openssl", "pkeyutl", "-encrypt", "-pubin", "-inkey", temp_pem],
-            input=password.encode(),
-            capture_output=True,
-        )
-        return result.stdout if result.returncode == 0 else None
-    finally:
-        if os.path.exists(temp_pem):
-            os.remove(temp_pem)
-
-
-def store_password(
-    password: str, priv: Path | None, pub: Path | None, key_type: str | None
-) -> bool:
-    """Write password to the appropriate encrypted store."""
-    if priv and pub and key_type:
-        if key_type == "Ed25519":
-            if not has_age():
-                print("Error: Ed25519 keys require the 'age' encryption tool", file=sys.stderr)
-                print("Install: https://github.com/FiloSottile/age#installation", file=sys.stderr)
-                return False
-            encrypted = age_encrypt(password, pub)
-            if encrypted is None:
-                return False
-            AGE_ENCRYPTED_FILE.write_bytes(encrypted)
-            AGE_ENCRYPTED_FILE.chmod(0o600)
-            print(f"Password encrypted with {key_type} key → {AGE_ENCRYPTED_FILE}")
-            return True
-
-        encrypted = encrypt_with_openssl(password, pub)
-        if encrypted is None:
-            print(f"Error: {key_type} encryption failed", file=sys.stderr)
-            return False
-        SSH_ENCRYPTED_FILE.write_bytes(encrypted)
-        SSH_ENCRYPTED_FILE.chmod(0o600)
-        print(f"Password encrypted with {key_type} key → {SSH_ENCRYPTED_FILE}")
-        return True
-
-    if HAS_KEYRING:
+def prompt_passphrase(identity: Path) -> str | None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
         try:
-            keyring.set_password(SERVICE_NAME, USERNAME, password)
-            print("Password stored in system keyring")
-            return True
-        except Exception as e:
-            print(f"Keyring storage failed: {e}", file=sys.stderr)
-
-    print("Error: no SSH keys or keyring available for secure storage", file=sys.stderr)
-    return False
+            return getpass.getpass(f"Enter passphrase for {identity}: ")
+        except (OSError, EOFError, getpass.GetPassWarning):
+            return None
 
 
 def _prompt_and_confirm_password() -> str | None:
@@ -119,16 +51,13 @@ def cmd_set(_args: argparse.Namespace) -> bool:
     password = _prompt_and_confirm_password()
     if password is None:
         return False
-    return store_password(password, *find_ssh_key())
+    credentials.store_password(password)
+    print("Password stored securely")
+    return True
 
 
 def cmd_set_totp(_args: argparse.Namespace) -> bool:
-    priv, pub, key_type = find_ssh_key()
-    if not priv:
-        print("Error: no SSH key found", file=sys.stderr)
-        return False
-
-    secret = load_totp_secret(priv)
+    secret = credentials.load_totp_secret(prompt_passphrase)
     if not secret:
         print(
             "Error: TOTP not configured. Run 'sudoplz totp-setup' first.",
@@ -162,22 +91,14 @@ def cmd_set_totp(_args: argparse.Namespace) -> bool:
 
     if password is None:
         return False
-    return store_password(password, priv, pub, key_type)
+    credentials.store_password(password)
+    print("Password stored securely")
+    return True
 
 
 def cmd_totp_setup(_args: argparse.Namespace) -> bool:
-    if not has_age():
-        print("Error: TOTP requires the 'age' encryption tool", file=sys.stderr)
-        return False
-    _, pub, _ = find_ssh_key()
-    if not pub:
-        print("Error: TOTP requires SSH keys", file=sys.stderr)
-        return False
-
     secret = generate_totp_secret()
-    if not save_totp_secret(secret, pub):
-        print("Error: failed to save TOTP secret", file=sys.stderr)
-        return False
+    credentials.save_totp_secret(secret)
 
     user = os.environ.get("USER", "user")
     host = socket.gethostname()
@@ -196,40 +117,21 @@ def cmd_totp_setup(_args: argparse.Namespace) -> bool:
 
 
 def cmd_get(_args: argparse.Namespace) -> bool:
-    if AGE_ENCRYPTED_FILE.exists():
-        print(f"Password stored (age-encrypted at {AGE_ENCRYPTED_FILE})")
-        return True
-    if SSH_ENCRYPTED_FILE.exists():
-        print(f"Password stored (SSH-encrypted at {SSH_ENCRYPTED_FILE})")
-        return True
-    if HAS_KEYRING:
-        try:
-            if keyring.get_password(SERVICE_NAME, USERNAME):
-                print("Password stored (system keyring)")
-                return True
-        except Exception as e:
-            print(f"Keyring lookup failed: {e}", file=sys.stderr)
-    print("No password stored")
-    return False
+    status = credentials.password_status(load_config()["expiration_hours"])
+    print(
+        {
+            "missing": "No password stored",
+            "expired": "Stored password expired or has unknown age; run 'sudoplz set'",
+            "stored": "Password stored securely",
+        }[status]
+    )
+    return status == "stored"
 
 
 def cmd_clear(_args: argparse.Namespace) -> bool:
-    cleared = False
-    for path in (AGE_ENCRYPTED_FILE, SSH_ENCRYPTED_FILE):
-        if path.exists():
-            path.unlink()
-            print(f"Removed {path}")
-            cleared = True
-    if HAS_KEYRING:
-        try:
-            keyring.delete_password(SERVICE_NAME, USERNAME)
-            print("Removed from system keyring")
-            cleared = True
-        except Exception:
-            pass
-    if not cleared:
-        print("Nothing to clear")
-    return cleared
+    credentials.clear_password()
+    print("Stored password cleared")
+    return True
 
 
 def cmd_test(_args: argparse.Namespace) -> bool:
@@ -273,12 +175,10 @@ def cmd_config(args: argparse.Namespace) -> bool:
         return False
 
     config["expiration_hours"] = new_value
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(json.dumps(config, indent=2) + "\n")
-    CONFIG_FILE.chmod(0o600)
+    atomic_write(CONFIG_FILE, (json.dumps(config, indent=2) + "\n").encode())
 
     if new_value == 0:
-        print("Expiration disabled. Stored password will not auto-delete.")
+        print("Expiration disabled. Stored password will not expire.")
     else:
         print(f"Expiration set to {new_value} hours.")
     return True
@@ -337,12 +237,17 @@ def main() -> None:
         "--expire-hours",
         type=int,
         metavar="N",
-        help="Set password expiration in hours (0 disables auto-delete)",
+        help="Set password expiration in hours (0 disables expiration)",
     )
     config_parser.set_defaults(func=cmd_config)
 
     args = parser.parse_args()
-    sys.exit(0 if args.func(args) else 1)
+    try:
+        succeeded = args.func(args)
+    except (OSError, ValueError, subprocess.SubprocessError, keyring.errors.KeyringError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        succeeded = False
+    sys.exit(0 if succeeded else 1)
 
 
 if __name__ == "__main__":

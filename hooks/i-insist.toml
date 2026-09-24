@@ -1,0 +1,3 @@
+[[rules]]
+id = "sudoplz/askpass"
+checker = ["python3", "../.local/share/sudoplz/i_insist_guard.py"]

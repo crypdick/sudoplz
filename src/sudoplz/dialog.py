@@ -1,16 +1,37 @@
-"""Approval dialog for ``sudo -A`` (Linux: PySide6; macOS: osascript)."""
+"""Approval / password dialogs for ``sudo -A`` (Linux: PySide6; macOS: osascript)."""
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import sys
 import syslog
+from collections.abc import Iterator
+
 DIALOG_TIMEOUT_MS = 60_000
 
 
 def _escape_osascript(text: str) -> str:
     return text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+@contextlib.contextmanager
+def _silence_stdio() -> Iterator[None]:
+    """Redirect fd 1/2 to /dev/null — sudo treats all askpass stdout as the password."""
+    saved_out = os.dup(1)
+    saved_err = os.dup(2)
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, 1)
+        os.dup2(devnull, 2)
+        os.close(devnull)
+        yield
+    finally:
+        os.dup2(saved_out, 1)
+        os.dup2(saved_err, 2)
+        os.close(saved_out)
+        os.close(saved_err)
 
 
 def show_osascript_dialog(user: str, host: str, command: str, explain: str, body: str) -> bool:
@@ -65,14 +86,7 @@ def show_qt_dialog(user: str, host: str, command: str, explain: str, body: str) 
 
     os.environ.setdefault("QT_LOGGING_TO_CONSOLE", "0")
 
-    saved_out = os.dup(1)
-    saved_err = os.dup(2)
-    try:
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, 1)
-        os.dup2(devnull, 2)
-        os.close(devnull)
-
+    with _silence_stdio():
         app = QApplication.instance()
         if app is None:
             app = QApplication(sys.argv[:1])
@@ -145,11 +159,6 @@ def show_qt_dialog(user: str, host: str, command: str, explain: str, body: str) 
         dialog.activateWindow()
         app.exec()
         return approved["value"]
-    finally:
-        os.dup2(saved_out, 1)
-        os.dup2(saved_err, 2)
-        os.close(saved_out)
-        os.close(saved_err)
 
 
 def show_zenity_fallback(user: str, host: str, command: str, explain: str, body: str) -> bool:
@@ -215,3 +224,184 @@ def show_dialog(
     except Exception as e:
         syslog.syslog(syslog.LOG_WARNING, f"PySide6 dialog failed, falling back to zenity: {e}")
         return show_zenity_fallback(user, host, command, explain_text, body_text)
+
+
+def _show_osascript_password(reason: str) -> str | None:
+    message = _escape_osascript(
+        f"{reason}\n\nEnter your sudo password (will be saved encrypted):"
+    )
+    script = (
+        'tell application "System Events"\nactivate\n'
+        f'display dialog "{message}" '
+        'default answer "" with hidden answer '
+        'with title "Sudo Password Required" '
+        'buttons {"Cancel", "Save"} default button "Save" '
+        "with icon caution giving up after 60\nend tell"
+    )
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script], capture_output=True, text=True, timeout=70
+        )
+        if result.returncode != 0:
+            return None
+        for part in result.stdout.split(", "):
+            if part.startswith("text returned:"):
+                password = part.removeprefix("text returned:").rstrip("\n")
+                return password or None
+        return None
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        syslog.syslog(syslog.LOG_WARNING, f"osascript password prompt failed: {e}")
+        return None
+
+
+def _show_zenity_password(reason: str) -> str | None:
+    try:
+        first = subprocess.run(
+            [
+                "zenity",
+                "--password",
+                "--title=Sudo Password Required",
+                f"--text={reason}\n\nEnter sudo password:",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=70,
+        )
+        if first.returncode != 0:
+            return None
+        password = first.stdout.rstrip("\n")
+        if not password:
+            return None
+        confirm = subprocess.run(
+            [
+                "zenity",
+                "--password",
+                "--title=Sudo Password Required",
+                "--text=Confirm sudo password:",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=70,
+        )
+        if confirm.returncode != 0:
+            return None
+        if confirm.stdout.rstrip("\n") != password:
+            subprocess.run(
+                [
+                    "zenity",
+                    "--error",
+                    "--title=Sudo Password Required",
+                    "--text=Passwords do not match.",
+                ],
+                capture_output=True,
+                timeout=30,
+            )
+            return None
+        return password
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        syslog.syslog(syslog.LOG_WARNING, f"zenity password prompt failed: {e}")
+        return None
+
+
+def _show_qt_password(reason: str) -> str | None:
+    from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtWidgets import (
+        QApplication,
+        QDialog,
+        QDialogButtonBox,
+        QFormLayout,
+        QHBoxLayout,
+        QLabel,
+        QLineEdit,
+        QVBoxLayout,
+    )
+
+    os.environ.setdefault("QT_LOGGING_TO_CONSOLE", "0")
+
+    with _silence_stdio():
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication(sys.argv[:1])
+
+        dialog = QDialog()
+        dialog.setWindowTitle("Sudo Password Required")
+        dialog.setMinimumWidth(420)
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+
+        root = QVBoxLayout(dialog)
+        header = QLabel("<b>Sudo password not stored</b>")
+        root.addWidget(header)
+        reason_label = QLabel(reason)
+        reason_label.setWordWrap(True)
+        root.addWidget(reason_label)
+
+        form = QFormLayout()
+        password_edit = QLineEdit()
+        password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        confirm_edit = QLineEdit()
+        confirm_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addRow("Password:", password_edit)
+        form.addRow("Confirm:", confirm_edit)
+        root.addLayout(form)
+
+        mismatch = QLabel("")
+        mismatch.setStyleSheet("color: #c0392b;")
+        root.addWidget(mismatch)
+
+        buttons = QDialogButtonBox()
+        cancel_btn = buttons.addButton("Cancel", QDialogButtonBox.ButtonRole.RejectRole)
+        save_btn = buttons.addButton("Save & Continue", QDialogButtonBox.ButtonRole.AcceptRole)
+        cancel_btn.setDefault(False)
+        save_btn.setDefault(True)
+        buttons.rejected.connect(dialog.reject)
+
+        result_password: dict[str, str | None] = {"value": None}
+
+        def try_accept() -> None:
+            password = password_edit.text()
+            confirm = confirm_edit.text()
+            if not password:
+                mismatch.setText("Password cannot be empty.")
+                return
+            if password != confirm:
+                mismatch.setText("Passwords do not match.")
+                return
+            result_password["value"] = password
+            dialog.accept()
+
+        buttons.accepted.connect(try_accept)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        btn_row.addWidget(buttons)
+        root.addLayout(btn_row)
+
+        timer = QTimer(dialog)
+        timer.setSingleShot(True)
+        timer.timeout.connect(dialog.reject)
+        timer.start(DIALOG_TIMEOUT_MS)
+
+        password_edit.setFocus()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        app.exec()
+        return result_password["value"]
+
+
+def prompt_sudo_password(reason: str | None = None) -> str | None:
+    """Ask for a sudo password (enter + confirm). Return None on cancel/timeout."""
+    reason_text = (reason or "").strip() or (
+        "No encrypted sudo password is available. Enter it to save and continue this command."
+    )
+
+    if sys.platform == "darwin":
+        return _show_osascript_password(reason_text)
+
+    if not has_display():
+        return None
+
+    try:
+        return _show_qt_password(reason_text)
+    except Exception as e:
+        syslog.syslog(syslog.LOG_WARNING, f"PySide6 password dialog failed, zenity fallback: {e}")
+        return _show_zenity_password(reason_text)

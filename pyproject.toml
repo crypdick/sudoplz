@@ -1,6 +1,6 @@
 [project]
 name = "sudoplz"
-version = "0.3.1"
+version = "0.3.2"
 description = "Give AI coding agents case-by-case sudo access via GUI approval, with SSH-key-encrypted password storage"
 readme = "README.md"
 license = { text = "MIT" }
@@ -32,9 +32,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/crypdick/sudoplz"
-Issues = "https://github.com/crypdick/sudoplz/issues"
-Source = "https://github.com/crypdick/sudoplz"
+Homepage = "https://github.com/mwsmws22/sudoplz"
+Issues = "https://github.com/mwsmws22/sudoplz/issues"
+Source = "https://github.com/mwsmws22/sudoplz"
+Upstream = "https://github.com/crypdick/sudoplz"
 
 [project.scripts]
 askpass = "sudoplz.askpass:main"

@@ -39,7 +39,9 @@ SSH_KEY_CANDIDATES: list[tuple[str, str]] = [
 DEFAULT_CONFIG: dict[str, Any] = {
     "require_user_confirmation": True,
     "allowed_paths": [str(HOME), "/tmp/"],
-    "expiration_hours": 168,
+    # 0 = never auto-delete. A positive value used to wipe askpass.age and leave
+    # agents stuck until `sudoplz set`; prefer the askpass re-prompt dialog instead.
+    "expiration_hours": 0,
     "allowed_processes": ["sudo", "claude-code", "code", "bash", "sh", "zsh", "fish"],
     "max_attempts_per_hour": 30,
     "lockout_minutes": 15,

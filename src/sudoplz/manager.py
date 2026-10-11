@@ -67,41 +67,59 @@ def encrypt_with_openssl(password: str, pub: Path) -> bytes | None:
 
 
 def store_password(
-    password: str, priv: Path | None, pub: Path | None, key_type: str | None
+    password: str,
+    priv: Path | None,
+    pub: Path | None,
+    key_type: str | None,
+    *,
+    quiet: bool = False,
 ) -> bool:
-    """Write password to the appropriate encrypted store."""
+    """Write password to the appropriate encrypted store.
+
+    When ``quiet`` is True (askpass path), status goes to stderr only so sudo
+    never sees it on stdout.
+    """
+
+    def _status(msg: str, *, error: bool = False) -> None:
+        print(msg, file=sys.stderr if quiet or error else sys.stdout)
+
     if priv and pub and key_type:
         if key_type == "Ed25519":
             if not has_age():
-                print("Error: Ed25519 keys require the 'age' encryption tool", file=sys.stderr)
-                print("Install: https://github.com/FiloSottile/age#installation", file=sys.stderr)
+                _status("Error: Ed25519 keys require the 'age' encryption tool", error=True)
+                _status(
+                    "Install: https://github.com/FiloSottile/age#installation",
+                    error=True,
+                )
                 return False
             encrypted = age_encrypt(password, pub)
             if encrypted is None:
                 return False
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             AGE_ENCRYPTED_FILE.write_bytes(encrypted)
             AGE_ENCRYPTED_FILE.chmod(0o600)
-            print(f"Password encrypted with {key_type} key → {AGE_ENCRYPTED_FILE}")
+            _status(f"Password encrypted with {key_type} key → {AGE_ENCRYPTED_FILE}")
             return True
 
         encrypted = encrypt_with_openssl(password, pub)
         if encrypted is None:
-            print(f"Error: {key_type} encryption failed", file=sys.stderr)
+            _status(f"Error: {key_type} encryption failed", error=True)
             return False
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         SSH_ENCRYPTED_FILE.write_bytes(encrypted)
         SSH_ENCRYPTED_FILE.chmod(0o600)
-        print(f"Password encrypted with {key_type} key → {SSH_ENCRYPTED_FILE}")
+        _status(f"Password encrypted with {key_type} key → {SSH_ENCRYPTED_FILE}")
         return True
 
     if HAS_KEYRING:
         try:
             keyring.set_password(SERVICE_NAME, USERNAME, password)
-            print("Password stored in system keyring")
+            _status("Password stored in system keyring")
             return True
         except Exception as e:
-            print(f"Keyring storage failed: {e}", file=sys.stderr)
+            _status(f"Keyring storage failed: {e}", error=True)
 
-    print("Error: no SSH keys or keyring available for secure storage", file=sys.stderr)
+    _status("Error: no SSH keys or keyring available for secure storage", error=True)
     return False
 
 

@@ -20,34 +20,64 @@ This threat model assumes a personal workstation with an encrypted disk and a pa
 
 ## Installation
 
-1. **Use traditional `sudo`, not `sudo-rs`.** `sudo-rs` doesn't support askpass. Check with `sudo --version` — it should say "Sudo version 1.x.x". If you're on `sudo-rs`, switch:
-   ```bash
-   sudo update-alternatives --install /usr/bin/sudo sudo /usr/bin/sudo.ws 100
-   sudo update-alternatives --config sudo   # pick sudo.ws
-   ```
-2. Make sure you have an SSH key (ed25519, ecdsa, rsa, or dsa).
-3. Install system dependencies:
-   - [`age`](https://github.com/FiloSottile/age) — required if your SSH key is Ed25519 (the most common case today). `sudo pacman -S age` / `sudo apt install age` / `brew install age`.
-   - On Linux, the approval UI uses **PySide6** (installed with the tool). `zenity` remains a fallback if Qt is unavailable. Not needed on macOS (uses AppleScript).
-4. Install with [`uv`](https://docs.astral.sh/uv/):
-   ```bash
-   uv tool install sudoplz
-   ```
-   This puts `askpass` and `sudoplz` on your PATH. (For development: clone the repo and run `uv tool install .` instead.)
-5. Point `SUDO_ASKPASS` at the installed binary (add to `~/.bashrc`, `~/.zshrc`, etc.):
-   ```bash
-   export SUDO_ASKPASS="$(which askpass)"
-   ```
-6. So agent context survives sudo's `env_reset`, install the bundled sudoers drop-in once:
-   ```bash
-   sudo install -m 0440 sudoers.d/sudoplz-env /etc/sudoers.d/sudoplz-env
-   sudo visudo -cf /etc/sudoers.d/sudoplz-env
-   ```
-   (Keeps `SUDOPLZ_EXPLAIN`, `SUDOPLZ_SCRIPT_BODY`, and `SUDOPLZ_SCRIPT`.)
-7. Store your sudo password:
-   ```bash
-   sudoplz set
-   ```
+Everything needed to rebuild this tool lives in the repo. Secrets do **not** — `~/.config/sudoplz/askpass.age` is created on the machine after install.
+
+### From this repo (recommended for the mws fork)
+
+```bash
+git clone https://github.com/mwsmws22/sudoplz.git
+cd sudoplz
+
+# system deps
+# Arch: sudo pacman -S --needed age uv
+# also need a traditional sudo (not sudo-rs) and an SSH key (ed25519 preferred)
+
+uv tool install --force .
+# → ~/.local/bin/askpass and ~/.local/bin/sudoplz
+
+# shell (e.g. ~/.bashrc)
+export PATH="$HOME/.local/bin:$PATH"
+export SUDO_ASKPASS="$HOME/.local/bin/askpass"
+
+# keep SUDOPLZ_* through sudo env_reset (one-time; needs a working sudo once)
+sudo install -m 0440 sudoers.d/sudoplz-env /etc/sudoers.d/sudoplz-env
+sudo visudo -cf /etc/sudoers.d/sudoplz-env
+
+# optional: copy example config and put your home in allowed_paths
+mkdir -p ~/.config/sudoplz
+cp askpass-config.json ~/.config/sudoplz/config.json
+# edit allowed_paths → ["/home/YOU", "/tmp/"]
+# expiration_hours: 0 is recommended (no auto-delete)
+
+# store password (terminal) — or skip and enter it in the GUI after the first Allow
+sudoplz set
+# sudoplz config --no-expire   # if you copied an old config with expiration
+
+# ssh-agent must be running (Plasma usually starts one). Ed25519 path uses age + the key file;
+# passphrase-protected keys need the key loaded in the agent for decrypt.
+sudoplz test
+```
+
+Shipped in-repo for setup:
+
+| Path | Role |
+|------|------|
+| `src/sudoplz/` | askpass + CLI |
+| `sudoers.d/sudoplz-env` | `env_keep` for `SUDOPLZ_*` |
+| `askpass-config.json` | example `~/.config/sudoplz/config.json` |
+| `pyproject.toml` / `uv.lock` | install via `uv tool install .` |
+
+Not in the repo (machine-local): `~/.config/sudoplz/askpass.age`, `audit.log`, live `config.json`.
+
+### Upstream / PyPI style
+
+```bash
+uv tool install sudoplz   # crypdick/PyPI — may lag this fork
+```
+
+1. **Use traditional `sudo`, not `sudo-rs`.** `sudo-rs` doesn't support askpass.
+2. SSH key + [`age`](https://github.com/FiloSottile/age) for Ed25519.
+3. On Linux, approval UI is **PySide6** (pulled in by the tool). `zenity` is a fallback.
 
 ## Usage
 
@@ -66,6 +96,8 @@ sudo -A keyd reload
 ```
 
 The dialog shows user/host, the explanation, and a scrollable **Command** panel with the body above. If those env vars are missing, the panel falls back to what `ps` reports for the sudo parent (often incomplete for heredocs).
+
+If you click **Allow** but no encrypted password is stored (never set, expired, or deleted), a second dialog asks for the sudo password (enter + confirm). On success it is encrypted with your SSH key and used for that `sudo -A` call.
 
 As a fallback when env is stripped, askpass also reads `$XDG_RUNTIME_DIR/sudoplz/pending.json` (`{explain, body, created_at}`, mode `0600`) and clears it after the dialog.
 
@@ -101,9 +133,9 @@ Encryption alone doesn't cover every abuse path — anything running as your use
 - **Caller process whitelist.** Parent process must be on an allowlist (sudo, your shell, your IDE, your deploy tool). Keeps arbitrary binaries from invoking askpass directly.
 - **User confirmation.** A GUI dialog asks for approval on each decryption (explanation + full command body when provided), so any sudo elevation you didn't initiate is visible and can be denied. On Linux the dialog is PySide6; stdout/stderr are redirected while it runs so Qt cannot corrupt the password sudo reads from askpass.
 - **Rate limiting.** Configurable max-attempts-per-hour and lockout window. Contains runaway scripts and brute-force attempts.
-- **Password expiration.** Stored passwords age out automatically (default: 1 week). A stolen blob becomes useless once it expires, even with your SSH key.
+- **Password expiration (optional).** Default is **off** (`expiration_hours: 0`). If you enable it, expired ciphertext is deleted; after you click Allow, askpass opens a password dialog so you can re-enter and continue without a separate `sudoplz set`.
 
-Configure these in `~/.config/sudoplz/config.json` — an example is shipped as `askpass-config.json` in the repo; copy it and edit.
+Configure these in `~/.config/sudoplz/config.json` — an example is shipped as `askpass-config.json` in the repo; copy it and edit. Or: `sudoplz config --no-expire` / `sudoplz config --expire-hours N`.
 
 ### Why age for Ed25519?
 
@@ -124,7 +156,7 @@ This works under `sudo -A` even though sudo strips `SSH_AUTH_SOCK`: the script r
 ## Commands
 
 ```bash
-sudoplz set        # Store password (terminal prompt; expires per config, 1 week default)
+sudoplz set        # Store password (terminal prompt; or re-enter via askpass GUI after Allow)
 sudoplz set-totp   # Store password with TOTP verification (headless)
 sudoplz totp-setup # Set up TOTP for headless sessions
 sudoplz get        # Check if password exists

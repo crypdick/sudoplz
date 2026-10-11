@@ -36,7 +36,8 @@ from sudoplz.core import (
     process_name,
     verify_totp,
 )
-from sudoplz.dialog import has_display, show_dialog
+from sudoplz.dialog import has_display, prompt_sudo_password, show_dialog
+from sudoplz.manager import store_password
 
 try:
     import keyring
@@ -186,6 +187,8 @@ def check_security(config: dict[str, Any], identity: Path | None) -> bool:
         syslog.syslog(syslog.LOG_WARNING, "Askpass called without terminal/SSH env")
         return False
 
+    # Expired ciphertext is removed; approval still proceeds so the user can
+    # re-enter the password in the GUI instead of a hard security failure.
     expiration_hours = config["expiration_hours"]
     if expiration_hours > 0:
         for blob in (AGE_ENCRYPTED_FILE, SSH_ENCRYPTED_FILE):
@@ -197,7 +200,6 @@ def check_security(config: dict[str, Any], identity: Path | None) -> bool:
                     blob.unlink()
                 except OSError as e:
                     syslog.syslog(syslog.LOG_WARNING, f"Could not remove expired {blob}: {e}")
-                return False
 
     if config["require_user_confirmation"]:
         user = os.environ.get("USER", "unknown")
@@ -412,6 +414,26 @@ def main() -> None:
                 return
         except Exception as e:
             syslog.syslog(syslog.LOG_WARNING, f"Keyring lookup failed: {e}")
+
+    # Priority 4: GUI re-prompt after Allow (missing / expired / unreadable store).
+    reason = (
+        "No encrypted sudo password is available (missing or expired). "
+        "Enter it to save with your SSH key and continue this command."
+    )
+    if has_display() or sys.platform == "darwin":
+        password = prompt_sudo_password(reason)
+        if password:
+            priv, pub, key_type = find_ssh_key()
+            if store_password(password, priv, pub, key_type, quiet=True):
+                print(password)
+                syslog.syslog(syslog.LOG_INFO, "Password stored via askpass re-prompt and returned")
+                return
+            print("Error: could not store sudo password", file=sys.stderr)
+            syslog.syslog(syslog.LOG_ERR, "Askpass re-prompt store_password failed")
+            sys.exit(1)
+        print("Error: sudo password entry cancelled", file=sys.stderr)
+        syslog.syslog(syslog.LOG_WARNING, "Askpass re-prompt cancelled")
+        sys.exit(1)
 
     print("Error: no password found in secure storage", file=sys.stderr)
     print("Use 'sudoplz set' to store the password securely", file=sys.stderr)

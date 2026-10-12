@@ -254,55 +254,6 @@ def _show_osascript_password(reason: str) -> str | None:
         return None
 
 
-def _show_zenity_password(reason: str) -> str | None:
-    try:
-        first = subprocess.run(
-            [
-                "zenity",
-                "--password",
-                "--title=Sudo Password Required",
-                f"--text={reason}\n\nEnter sudo password:",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=70,
-        )
-        if first.returncode != 0:
-            return None
-        password = first.stdout.rstrip("\n")
-        if not password:
-            return None
-        confirm = subprocess.run(
-            [
-                "zenity",
-                "--password",
-                "--title=Sudo Password Required",
-                "--text=Confirm sudo password:",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=70,
-        )
-        if confirm.returncode != 0:
-            return None
-        if confirm.stdout.rstrip("\n") != password:
-            subprocess.run(
-                [
-                    "zenity",
-                    "--error",
-                    "--title=Sudo Password Required",
-                    "--text=Passwords do not match.",
-                ],
-                capture_output=True,
-                timeout=30,
-            )
-            return None
-        return password
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        syslog.syslog(syslog.LOG_WARNING, f"zenity password prompt failed: {e}")
-        return None
-
-
 def _show_qt_password(reason: str) -> str | None:
     from PySide6.QtCore import Qt, QTimer
     from PySide6.QtWidgets import (
@@ -350,8 +301,11 @@ def _show_qt_password(reason: str) -> str | None:
 
         buttons = QDialogButtonBox()
         cancel_btn = buttons.addButton("Cancel", QDialogButtonBox.ButtonRole.RejectRole)
-        save_btn = buttons.addButton("Save & Continue", QDialogButtonBox.ButtonRole.AcceptRole)
+        save_btn = buttons.addButton("Save", QDialogButtonBox.ButtonRole.AcceptRole)
+        # Enter activates the default button — must be Save, not Cancel.
+        cancel_btn.setAutoDefault(False)
         cancel_btn.setDefault(False)
+        save_btn.setAutoDefault(True)
         save_btn.setDefault(True)
         buttons.rejected.connect(dialog.reject)
 
@@ -403,5 +357,5 @@ def prompt_sudo_password(reason: str | None = None) -> str | None:
     try:
         return _show_qt_password(reason_text)
     except Exception as e:
-        syslog.syslog(syslog.LOG_WARNING, f"PySide6 password dialog failed, zenity fallback: {e}")
-        return _show_zenity_password(reason_text)
+        syslog.syslog(syslog.LOG_ERR, f"PySide6 password dialog failed: {e}")
+        return None

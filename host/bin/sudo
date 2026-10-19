@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Fail closed for agent/non-TTY plain sudo. Force sudoplz askpass on -A.
+# Interactive terminals: plain `sudo` still reads the password from the TTY.
+set -euo pipefail
+
+ASKPASS="${HOME}/.local/bin/askpass"
+REAL=/usr/bin/sudo
+
+export SUDO_ASKPASS="$ASKPASS"
+unset SSH_ASKPASS || true
+export SSH_ASKPASS_REQUIRE=never
+
+has_A=0
+has_n=0
+for arg in "$@"; do
+  case "$arg" in
+    --) break ;;
+    -A | --askpass) has_A=1 ;;
+    -n | --non-interactive) has_n=1 ;;
+    --*) ;;
+    -*)
+      opt="${arg#-}"
+      while [[ -n "$opt" ]]; do
+        c="${opt:0:1}"
+        opt="${opt:1}"
+        case "$c" in
+          A) has_A=1 ;;
+          n) has_n=1 ;;
+          # sudo short opts that consume a value — stop scanning this cluster
+          u | g | p | U | C | D | T | r | R | t) break ;;
+        esac
+      done
+      ;;
+    *) break ;;
+  esac
+done
+
+# No stdin TTY (agent shells, pipes): never allow password-on-TTY sudo,
+# and never fall through to a system askpass via a wrong SUDO_ASKPASS.
+if [[ ! -t 0 ]] && ((has_A == 0 && has_n == 0)); then
+  printf '%s\n' \
+    "sudoplz: refused plain sudo without a TTY (system askpass is banned)." \
+    "Use:  export SUDOPLZ_EXPLAIN='…'; SUDOPLZ_SCRIPT_BODY='…'; sudo -A <cmd>" \
+    "Do not call /usr/bin/sudo to bypass this wrapper." >&2
+  exit 1
+fi
+
+exec "$REAL" "$@"

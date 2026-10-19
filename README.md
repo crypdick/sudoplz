@@ -20,58 +20,50 @@ This threat model assumes a personal workstation with an encrypted disk and a pa
 
 ## Installation
 
-Everything needed to rebuild this tool lives in the repo. Secrets do **not** — `~/.config/sudoplz/askpass.age` is created on the machine after install.
+Everything needed to rebuild the **non-secret** stack lives in the repo (tool + portable host wiring). Secrets do **not** — `~/.config/sudoplz/askpass.age` is created on the machine after install.
 
-### From this repo (recommended for the mws fork)
+### One-shot (recommended)
 
 ```bash
-git clone https://github.com/mwsmws22/sudoplz.git
+git clone https://github.com/mwsmws22/sudoplz.git   # or your fork / path
 cd sudoplz
 
-# system deps
-# Arch: sudo pacman -S --needed age uv
-# also need a traditional sudo (not sudo-rs) and an SSH key (ed25519 preferred)
+# deps (example Arch): sudo pacman -S --needed age uv
+# need traditional sudo (not sudo-rs) and an SSH key (ed25519 preferred)
 
-uv tool install --force .
-# → ~/.local/bin/askpass and ~/.local/bin/sudoplz
-
-# shell (e.g. ~/.bashrc)
-export PATH="$HOME/.local/bin:$PATH"
-export SUDO_ASKPASS="$HOME/.local/bin/askpass"
-
-# keep SUDOPLZ_* through sudo env_reset (one-time; needs a working sudo once)
-sudo install -m 0440 sudoers.d/sudoplz-env /etc/sudoers.d/sudoplz-env
-sudo visudo -cf /etc/sudoers.d/sudoplz-env
-
-# optional: copy example config and put your home in allowed_paths
-mkdir -p ~/.config/sudoplz
-cp askpass-config.json ~/.config/sudoplz/config.json
-# edit allowed_paths → ["/home/YOU", "/tmp/"]
-# expiration_hours: 0 is recommended (no auto-delete)
-
-# store password (terminal) — or skip and enter it in the GUI after the first Allow
-sudoplz set
-# sudoplz config --no-expire   # if you copied an old config with expiration
-
-# ssh-agent must be running (Plasma usually starts one) with your key already loaded.
-sudoplz test
+./host/install.sh --with-cursor-rule
 ```
 
-Shipped in-repo for setup:
+`host/install.sh` is **portable** (`$HOME` / systemd `%h` only — no hardcoded username):
+
+| Step | Result |
+|------|--------|
+| `uv tool install --force .` | `~/.local/bin/askpass`, `sudoplz` |
+| `~/bin/sudo` | Refuse non-TTY plain sudo; force sudoplz askpass |
+| `~/.config/sudoplz/env.sh` | `PATH` + `SUDO_ASKPASS`; sourced from bashrc/zshrc |
+| `~/.config/environment.d/sudoplz.conf` | Same for Plasma/IDE sessions (`%h`) |
+| `~/.config/sudoplz/config.json` | Seeded with **this** user’s home in `allowed_paths` (won’t overwrite unless `--force-config`) |
+| `/etc/sudoers.d/sudoplz-env` | Keep `SUDOPLZ_*` through `env_reset` (needs a TTY once) |
+| optional Cursor rule | `--with-cursor-rule` → `~/.cursor/rules/sudoplz.mdc` |
+
+Then re-login (or restart the IDE), ensure ssh-agent has your key, and either `sudoplz set` or enter the password on the first Allow dialog. Smoke: `sudoplz test`.
+
+Shipped in-repo:
 
 | Path | Role |
 |------|------|
 | `src/sudoplz/` | askpass + CLI |
+| `host/` | portable wrapper, env, installer, Cursor rule |
 | `sudoers.d/sudoplz-env` | `env_keep` for `SUDOPLZ_*` |
-| `askpass-config.json` | example `~/.config/sudoplz/config.json` |
-| `pyproject.toml` / `uv.lock` | install via `uv tool install .` |
+| `askpass-config.json` | template for `~/.config/sudoplz/config.json` |
+| `pyproject.toml` / `uv.lock` | `uv tool install .` |
 
-Not in the repo (machine-local): `~/.config/sudoplz/askpass.age`, `audit.log`, live `config.json`.
+Not in the repo (machine-local): `askpass.age`, `audit.log`, live `config.json`.
 
-### Upstream / PyPI style
+### Upstream / PyPI style (tool only)
 
 ```bash
-uv tool install sudoplz   # crypdick/PyPI — may lag this fork
+uv tool install sudoplz   # crypdick/PyPI — may lag this fork; no host/ wiring
 ```
 
 1. **Use traditional `sudo`, not `sudo-rs`.** `sudo-rs` doesn't support askpass.

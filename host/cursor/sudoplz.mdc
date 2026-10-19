@@ -1,0 +1,46 @@
+# sudoplz — never use system askpass / plain sudo
+
+Applies to **this agent and every subagent**. Approving a tool call is not root.
+
+## Banned (never)
+
+- Plain `sudo` / `sudo -S` / piping a password
+- `/usr/bin/sudo` (bypasses `$HOME/bin/sudo` wrapper)
+- `pkexec` / Polkit auth dialogs for agent work
+- zenity, ksshaskpass, ssh-askpass, lxqt-openssh-askpass, or any padlock “Type your password” UI
+- Setting `SUDO_ASKPASS` to anything except `$HOME/.local/bin/askpass`
+
+If a non-PySide6 password dialog appears: **cancel it** — that is a bug in the caller.
+
+## Required
+
+Install from this repo: `./host/install.sh` (and optionally `--with-cursor-rule`).
+`SUDO_ASKPASS=$HOME/.local/bin/askpass`. PATH must prefer `$HOME/bin` (wrapper) then `$HOME/.local/bin`.
+
+Before elevating:
+
+1. **Explain in chat** why root is needed.
+2. **Set context env vars** — **required**; missing explain or body **denies** (fail closed, no dialog):
+   - `SUDOPLZ_EXPLAIN` — one or two sentences (non-empty)
+   - `SUDOPLZ_SCRIPT_BODY` — the **entire** command text (include heredoc/script bodies)
+   - Or `SUDOPLZ_SCRIPT` — path to a file with that text (prefer when body &gt; ~32 KiB)
+3. Optionally write `$XDG_RUNTIME_DIR/sudoplz/pending.json` (`{explain, body, created_at}`, mode `0600`) as fallback when `env_keep` is missing — both fields must be non-empty.
+4. Run **`sudo -A …`** only (never plain `sudo`).
+
+Example:
+
+```bash
+export SUDOPLZ_EXPLAIN='Reload keyd after editing /etc/keyd/input-shortcuts.conf.'
+export SUDOPLZ_SCRIPT_BODY='keyd reload'
+sudo -A keyd reload
+```
+
+## Host enforcement (from `./host/install.sh`)
+
+- `$HOME/bin/sudo` — refuses plain sudo when stdin is not a TTY; forces `SUDO_ASKPASS` to sudoplz
+- `$HOME/.config/environment.d/sudoplz.conf` — session-wide `PATH` + `SUDO_ASKPASS` (re-login to refresh the IDE)
+- `$HOME/.config/sudoplz/env.sh` — sourced from bashrc/zshrc
+
+## Allowed GUIs (PySide6 only)
+
+Allow/Deny → optional SSH key passphrase → optional sudo password enter+confirm; or faillock wait/Dismiss.

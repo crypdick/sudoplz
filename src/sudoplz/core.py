@@ -272,28 +272,6 @@ def pam_faillock_lockout(user: str) -> FaillockLockout | None:
     return FaillockLockout(user=user, remaining_minutes=remaining_min)
 
 
-def reset_faillock_via_polkit(user: str) -> tuple[bool, str]:
-    """Run ``pkexec faillock --user … --reset``. Return (ok, detail)."""
-    try:
-        result = subprocess.run(
-            ["pkexec", "faillock", "--user", user, "--reset"],
-            capture_output=True,
-            text=True,
-            timeout=180,
-        )
-    except FileNotFoundError:
-        return False, "pkexec not found (install polkit)."
-    except subprocess.TimeoutExpired:
-        return False, "Polkit unlock timed out."
-
-    detail = (result.stderr or result.stdout or "").strip()
-    if result.returncode == 0:
-        return True, detail or "faillock reset ok"
-    if result.returncode == 126 or result.returncode == 127:
-        return False, detail or "Polkit unlock cancelled or denied."
-    return False, detail or f"faillock reset failed (exit {result.returncode})"
-
-
 def parent_command(pid: int) -> str:
     """Return the parent process's full command line, or 'Unknown command'."""
     try:

@@ -137,7 +137,8 @@ Encryption alone doesn't cover every abuse path — anything running as your use
 - **Caller process whitelist.** Parent process must be on an allowlist (sudo, your shell, your IDE, your deploy tool). Keeps arbitrary binaries from invoking askpass directly.
 - **User confirmation.** A GUI dialog asks for approval on each decryption (explanation + full command body when provided), so any sudo elevation you didn't initiate is visible and can be denied. On Linux the dialog is PySide6; stdout/stderr are redirected while it runs so Qt cannot corrupt the password sudo reads from askpass.
 - **Rate limiting.** Configurable max-attempts-per-hour and lockout window. Contains runaway scripts and brute-force attempts.
-- **pam_faillock pre-check.** If locked, one dialog (Unlock via Polkit default, or Dismiss). One askpass cycle per sudo process; further sudo retries get no UI. Stale password store still uses enter+confirm on that first cycle.
+- **pam_faillock pre-check.** If locked, one wait/Dismiss dialog (Polkit cannot unlock — same lock). One askpass cycle per sudo process; further retries get no UI.
+
 
 - **Password expiration (optional).** Default is **off** (`expiration_hours: 0`). If you enable it, expired ciphertext is deleted; after you click Allow, askpass opens a password dialog so you can re-enter and continue without a separate `sudoplz set`.
 

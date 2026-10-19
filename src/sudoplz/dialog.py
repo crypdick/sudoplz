@@ -8,6 +8,7 @@ import subprocess
 import sys
 import syslog
 from collections.abc import Iterator
+from pathlib import Path
 
 DIALOG_TIMEOUT_MS = 60_000
 
@@ -161,43 +162,6 @@ def show_qt_dialog(user: str, host: str, command: str, explain: str, body: str) 
         return approved["value"]
 
 
-def show_zenity_fallback(user: str, host: str, command: str, explain: str, body: str) -> bool:
-    """Last-resort zenity if PySide6 is unavailable."""
-    del command
-    body_preview = body if len(body) <= 1500 else body[:1500] + "\n…(truncated)"
-    message = (
-        "Administrator privileges requested\n\n"
-        f"User: {user}\nHost: {host}\n\n"
-        f"Explanation:\n{explain}\n\n"
-        f"Command:\n{body_preview}\n\n"
-        "Do you want to allow this?"
-    )
-    try:
-        result = subprocess.run(
-            [
-                "zenity",
-                "--question",
-                "--title=Sudo Authentication Required",
-                f"--text={message}",
-                "--width=560",
-                "--ok-label=Allow",
-                "--cancel-label=Deny",
-            ],
-            capture_output=True,
-            timeout=60,
-        )
-        return result.returncode == 0
-    except FileNotFoundError:
-        syslog.syslog(
-            syslog.LOG_ERR,
-            "zenity not found and PySide6 unavailable",
-        )
-        return False
-    except subprocess.TimeoutExpired:
-        syslog.syslog(syslog.LOG_WARNING, "zenity dialog timed out")
-        return False
-
-
 def has_display() -> bool:
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
@@ -210,7 +174,14 @@ def show_dialog(
     body: str | None = None,
 ) -> bool:
     """Prompt the user for approval. Return True on Allow."""
-    explain_text = (explain or "").strip() or "(no explanation provided)"
+    explain_text = (explain or "").strip()
+    if not explain_text:
+        syslog.syslog(
+            syslog.LOG_WARNING,
+            "Sudo access denied: missing SUDOPLZ_EXPLAIN (fail closed)",
+        )
+        return False
+
     body_text = (body or "").strip() or command or "(no command body provided)"
 
     if sys.platform == "darwin":
@@ -222,8 +193,8 @@ def show_dialog(
     try:
         return show_qt_dialog(user, host, command, explain_text, body_text)
     except Exception as e:
-        syslog.syslog(syslog.LOG_WARNING, f"PySide6 dialog failed, falling back to zenity: {e}")
-        return show_zenity_fallback(user, host, command, explain_text, body_text)
+        syslog.syslog(syslog.LOG_ERR, f"PySide6 approval dialog failed: {e}")
+        return False
 
 
 def _show_osascript_password(reason: str) -> str | None:
@@ -340,6 +311,136 @@ def _show_qt_password(reason: str) -> str | None:
         dialog.activateWindow()
         app.exec()
         return result_password["value"]
+
+
+def _show_qt_passphrase(key_path: Path) -> str | None:
+    """Same PySide6 chrome as the sudo-password dialog — single passphrase field."""
+    from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtWidgets import (
+        QApplication,
+        QDialog,
+        QDialogButtonBox,
+        QFormLayout,
+        QHBoxLayout,
+        QLabel,
+        QLineEdit,
+        QVBoxLayout,
+    )
+
+    os.environ.setdefault("QT_LOGGING_TO_CONSOLE", "0")
+
+    with _silence_stdio():
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication(sys.argv[:1])
+
+        dialog = QDialog()
+        dialog.setWindowTitle("SSH Key Passphrase Required")
+        dialog.setMinimumWidth(420)
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+
+        root = QVBoxLayout(dialog)
+        header = QLabel("<b>Unlock SSH key</b>")
+        root.addWidget(header)
+        reason_label = QLabel(
+            f"Enter the passphrase for <code>{key_path}</code> so the stored "
+            "sudo password can be decrypted."
+        )
+        reason_label.setWordWrap(True)
+        reason_label.setTextFormat(Qt.TextFormat.RichText)
+        root.addWidget(reason_label)
+
+        form = QFormLayout()
+        passphrase_edit = QLineEdit()
+        passphrase_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addRow("Passphrase:", passphrase_edit)
+        root.addLayout(form)
+
+        error = QLabel("")
+        error.setStyleSheet("color: #c0392b;")
+        root.addWidget(error)
+
+        buttons = QDialogButtonBox()
+        cancel_btn = buttons.addButton("Cancel", QDialogButtonBox.ButtonRole.RejectRole)
+        unlock_btn = buttons.addButton("Unlock", QDialogButtonBox.ButtonRole.AcceptRole)
+        cancel_btn.setAutoDefault(False)
+        cancel_btn.setDefault(False)
+        unlock_btn.setAutoDefault(True)
+        unlock_btn.setDefault(True)
+        buttons.rejected.connect(dialog.reject)
+
+        result: dict[str, str | None] = {"value": None}
+
+        def try_accept() -> None:
+            text = passphrase_edit.text()
+            if not text:
+                error.setText("Passphrase cannot be empty.")
+                return
+            result["value"] = text
+            dialog.accept()
+
+        buttons.accepted.connect(try_accept)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        btn_row.addWidget(buttons)
+        root.addLayout(btn_row)
+
+        timer = QTimer(dialog)
+        timer.setSingleShot(True)
+        timer.timeout.connect(dialog.reject)
+        timer.start(DIALOG_TIMEOUT_MS)
+
+        passphrase_edit.setFocus()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        app.exec()
+        return result["value"]
+
+
+def _show_osascript_passphrase(key_path: Path) -> str | None:
+    message = _escape_osascript(
+        f"Enter passphrase for {key_path} to decrypt the stored sudo password:"
+    )
+    script = (
+        'tell application "System Events"\nactivate\n'
+        f'display dialog "{message}" '
+        'default answer "" with hidden answer '
+        'with title "SSH Key Passphrase Required" '
+        'buttons {"Cancel", "Unlock"} default button "Unlock" '
+        "with icon caution giving up after 60\nend tell"
+    )
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script], capture_output=True, text=True, timeout=70
+        )
+        if result.returncode != 0:
+            return None
+        for part in result.stdout.split(", "):
+            if part.startswith("text returned:"):
+                text = part.removeprefix("text returned:").rstrip("\n")
+                return text or None
+        return None
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        syslog.syslog(syslog.LOG_WARNING, f"osascript passphrase prompt failed: {e}")
+        return None
+
+
+def prompt_ssh_passphrase(key_path: str | Path) -> str | None:
+    """Ask for an SSH private-key passphrase (PySide6 on Linux)."""
+    path = Path(key_path)
+
+    if sys.platform == "darwin":
+        return _show_osascript_passphrase(path)
+
+    if not has_display():
+        return None
+
+    try:
+        return _show_qt_passphrase(path)
+    except Exception as e:
+        syslog.syslog(syslog.LOG_ERR, f"PySide6 passphrase dialog failed: {e}")
+        return None
 
 
 def prompt_sudo_password(reason: str | None = None) -> str | None:

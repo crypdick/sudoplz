@@ -36,7 +36,7 @@ from sudoplz.core import (
     process_name,
     verify_totp,
 )
-from sudoplz.dialog import has_display, prompt_sudo_password, show_dialog
+from sudoplz.dialog import has_display, prompt_ssh_passphrase, prompt_sudo_password, show_dialog
 from sudoplz.manager import store_password
 
 try:
@@ -205,7 +205,21 @@ def check_security(config: dict[str, Any], identity: Path | None) -> bool:
         user = os.environ.get("USER", "unknown")
         host = socket.gethostname()
         command = parent_command(os.getppid())
-        explain, body = load_request_context(command)
+        explain, body, explicit_body = load_request_context(command)
+        if not (explain or "").strip():
+            syslog.syslog(
+                syslog.LOG_WARNING,
+                "Sudo access denied: missing SUDOPLZ_EXPLAIN (fail closed)",
+            )
+            clear_pending()
+            return False
+        if not explicit_body or not body.strip():
+            syslog.syslog(
+                syslog.LOG_WARNING,
+                "Sudo access denied: missing SUDOPLZ_SCRIPT_BODY (fail closed)",
+            )
+            clear_pending()
+            return False
         try:
             if has_display() or sys.platform == "darwin":
                 approved = show_dialog(user, host, command, explain, body)
@@ -221,47 +235,8 @@ def check_security(config: dict[str, Any], identity: Path | None) -> bool:
     return True
 
 
-def prompt_passphrase(priv: Path) -> str | None:
-    """GUI prompt for SSH key passphrase (osascript on macOS, zenity on Linux)."""
-    if sys.platform == "darwin":
-        script = (
-            f'display dialog "Enter passphrase for {priv}:" '
-            'default answer "" with hidden answer '
-            'with title "SSH Key Passphrase Required" '
-            'with icon caution'
-        )
-        try:
-            result = subprocess.run(
-                ["osascript", "-e", script], capture_output=True, text=True, timeout=120
-            )
-            if result.returncode != 0:
-                return None
-            for part in result.stdout.split(", "):
-                if part.startswith("text returned:"):
-                    return part.removeprefix("text returned:").rstrip("\n")
-            return None
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            syslog.syslog(syslog.LOG_WARNING, f"osascript passphrase prompt failed: {e}")
-            return None
-
-    if "DISPLAY" not in os.environ:
-        return None
-
-    try:
-        result = subprocess.run(
-            ["zenity", "--password", "--title=SSH Key Passphrase Required"],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        return result.stdout.rstrip("\n") if result.returncode == 0 else None
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        syslog.syslog(syslog.LOG_WARNING, f"zenity passphrase prompt failed: {e}")
-        return None
-
-
 def ensure_ssh_key_loaded(priv: Path) -> bool:
-    """Make sure ssh-agent holds the private key, prompting for passphrase if not."""
+    """Load ``priv`` into ssh-agent via PySide6 passphrase prompt if needed."""
     if not os.environ.get("SSH_AUTH_SOCK"):
         syslog.syslog(syslog.LOG_ERR, "No SSH_AUTH_SOCK available; start ssh-agent first")
         return False
@@ -281,13 +256,27 @@ def ensure_ssh_key_loaded(priv: Path) -> bool:
         syslog.syslog(syslog.LOG_ERR, f"ssh tooling missing: {e}")
         return False
 
-    passphrase = prompt_passphrase(priv)
+    passphrase = prompt_ssh_passphrase(priv)
     if passphrase is None:
         return False
+
+    # Feed passphrase on stdin; never let ssh-add spawn SSH_ASKPASS.
+    env = os.environ.copy()
+    env.pop("SSH_ASKPASS", None)
+    env["SSH_ASKPASS_REQUIRE"] = "never"
     add_result = subprocess.run(
-        ["ssh-add", str(priv)], input=passphrase.encode(), capture_output=True
+        ["ssh-add", str(priv)],
+        input=passphrase.encode(),
+        capture_output=True,
+        env=env,
     )
-    return add_result.returncode == 0
+    if add_result.returncode != 0:
+        syslog.syslog(
+            syslog.LOG_WARNING,
+            f"ssh-add failed: {add_result.stderr.decode(errors='replace').strip()}",
+        )
+        return False
+    return True
 
 
 def decrypt_with_openssl(encrypted_file: Path, priv: Path, key_type: str) -> str | None:
@@ -386,8 +375,7 @@ def main() -> None:
     write_audit_entry(ppid, process_name(ppid), parent_command(ppid))
 
     # Priority 1: age-encrypted file (Ed25519).
-    # age decrypts with the identity file directly; ssh-agent is best-effort
-    # (needed only when the key is passphrase-protected and not already usable).
+    # After Allow: unlock key via PySide6 if needed, then decrypt.
     if AGE_ENCRYPTED_FILE.exists() and priv and has_age():
         ensure_ssh_key_loaded(priv)
         password = age_decrypt(AGE_ENCRYPTED_FILE.read_bytes(), priv)

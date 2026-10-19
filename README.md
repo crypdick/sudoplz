@@ -53,8 +53,7 @@ cp askpass-config.json ~/.config/sudoplz/config.json
 sudoplz set
 # sudoplz config --no-expire   # if you copied an old config with expiration
 
-# ssh-agent must be running (Plasma usually starts one). Ed25519 path uses age + the key file;
-# passphrase-protected keys need the key loaded in the agent for decrypt.
+# ssh-agent must be running (Plasma usually starts one) with your key already loaded.
 sudoplz test
 ```
 
@@ -77,7 +76,7 @@ uv tool install sudoplz   # crypdick/PyPI — may lag this fork
 
 1. **Use traditional `sudo`, not `sudo-rs`.** `sudo-rs` doesn't support askpass.
 2. SSH key + [`age`](https://github.com/FiloSottile/age) for Ed25519.
-3. On Linux, approval UI is **PySide6** (pulled in by the tool). `zenity` is a fallback.
+3. On Linux, all GUI prompts use **PySide6** (pulled in by the tool). Missing `SUDOPLZ_EXPLAIN` or command body → deny (no dialog).
 
 ## Usage
 
@@ -95,9 +94,14 @@ export SUDOPLZ_SCRIPT_BODY='keyd reload'
 sudo -A keyd reload
 ```
 
-The dialog shows user/host, the explanation, and a scrollable **Command** panel with the body above. If those env vars are missing, the panel falls back to what `ps` reports for the sudo parent (often incomplete for heredocs).
+The dialog shows user/host, the explanation, and a scrollable **Command** panel with the body above. Missing explain or body → deny (no dialog).
 
-If you click **Allow** but no encrypted password is stored (never set, expired, or deleted), a second dialog asks for the sudo password (enter + confirm). On success it is encrypted with your SSH key and used for that `sudo -A` call.
+After **Allow**, askpass may show further PySide6 dialogs in order:
+
+1. **SSH key passphrase** — if the key is not already in ssh-agent (`Unlock` / Cancel)
+2. **Sudo password** — if the encrypted store is missing or still cannot decrypt (enter + confirm)
+
+No zenity / system `SSH_ASKPASS` dialogs.
 
 As a fallback when env is stripped, askpass also reads `$XDG_RUNTIME_DIR/sudoplz/pending.json` (`{explain, body, created_at}`, mode `0600`) and clears it after the dialog.
 
@@ -141,17 +145,7 @@ Configure these in `~/.config/sudoplz/config.json` — an example is shipped as 
 
 Ed25519 is a signing algorithm (EdDSA), not encryption. OpenSSL handles RSA encryption directly, but Ed25519 keys can't do asymmetric encryption at all. `age` was designed to work with SSH keys including Ed25519.
 
-### SSH key unlocking
-
-If your SSH key has a passphrase (recommended), the askpass tool will:
-
-1. Check whether the key is loaded in ssh-agent
-2. Prompt for the passphrase via GUI if it isn't
-3. Load the key into ssh-agent for the session
-
-You enter the passphrase once per session. After that, sudo commands only need the confirmation dialog. You need a running ssh-agent — most desktop environments start one on login; if not, `eval "$(ssh-agent -s)"` in your shell startup.
-
-This works under `sudo -A` even though sudo strips `SSH_AUTH_SOCK`: the script reconnects to your running ssh-agent (including common sockets such as `$XDG_RUNTIME_DIR/ssh-agent.socket`).
+Passphrase-protected SSH keys are unlocked via the PySide6 passphrase dialog (then `ssh-add`) when not already in ssh-agent. Askpass reconnects to `$XDG_RUNTIME_DIR/ssh-agent.socket` when sudo strips `SSH_AUTH_SOCK`, and strips `SSH_ASKPASS` so OpenSSH/`age` cannot spawn a second system prompt.
 
 ## Commands
 

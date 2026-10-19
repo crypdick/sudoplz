@@ -66,11 +66,13 @@ def clear_pending() -> None:
         syslog.syslog(syslog.LOG_WARNING, f"Could not clear pending request {path}: {e}")
 
 
-def load_request_context(fallback_command: str) -> tuple[str | None, str]:
-    """Return (explain, body).
+def load_request_context(fallback_command: str) -> tuple[str | None, str, bool]:
+    """Return (explain, body, explicit_body).
 
     Priority for body: SUDOPLZ_SCRIPT_BODY → SUDOPLZ_SCRIPT file → pending.json → fallback.
     Priority for explain: SUDOPLZ_EXPLAIN → pending.json → None.
+
+    ``explicit_body`` is True when body came from agent env/pending, not ``fallback_command``.
     """
     pending = _load_pending()
 
@@ -79,17 +81,27 @@ def load_request_context(fallback_command: str) -> tuple[str | None, str]:
         raw = pending.get("explain")
         explain = raw if isinstance(raw, str) else None
 
+    explicit_body = False
     body: str | None = os.environ.get("SUDOPLZ_SCRIPT_BODY")
+    if body and body.strip():
+        explicit_body = True
+    elif body is not None and not body.strip():
+        body = None
+
     if not body:
         script_path = os.environ.get("SUDOPLZ_SCRIPT")
         if script_path:
-            body = _read_body_file(script_path)
+            read = _read_body_file(script_path)
+            if read:
+                body = read
+                explicit_body = True
     if not body and pending:
         raw_body = pending.get("body")
         if isinstance(raw_body, str) and raw_body.strip():
             body = raw_body
+            explicit_body = True
 
     if not body:
         body = fallback_command
 
-    return (explain, body)
+    return (explain, body, explicit_body)

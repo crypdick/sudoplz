@@ -139,10 +139,16 @@ def age_encrypt(data: str, recipient_pub: Path) -> bytes | None:
 def age_decrypt(encrypted: bytes, identity: Path) -> str | None:
     if not has_age():
         return None
+    # Never let age/OpenSSH spawn an SSH_ASKPASS passphrase UI.
+    env = os.environ.copy()
+    env.pop("SSH_ASKPASS", None)
+    env.pop("SSH_ASKPASS_REQUIRE", None)
+    env["GIT_TERMINAL_PROMPT"] = "0"
     result = subprocess.run(
         ["age", "-d", "-i", str(identity)],
         input=encrypted,
         capture_output=True,
+        env=env,
     )
     if result.returncode != 0:
         syslog.syslog(syslog.LOG_ERR, f"age decrypt failed: {result.stderr.decode().strip()}")

@@ -166,6 +166,178 @@ def has_display() -> bool:
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
+def show_faillock_dialog(user: str, remaining_minutes: int) -> None:
+    """Explain pam_faillock lockout; offer Polkit unlock or dismiss.
+
+    Never writes to stdout (sudo treats askpass stdout as the password).
+    """
+    from sudoplz.core import reset_faillock_via_polkit
+
+    title = "Sudo temporarily locked"
+    if sys.platform == "darwin":
+        message = (
+            f"Linux pam_faillock locked account '{user}' after failed sudo attempts "
+            f"(~{remaining_minutes} min left). Even the correct password is rejected "
+            "until the lock clears. Dismiss and wait, then retry."
+        )
+        escaped = _escape_osascript(message)
+        script = (
+            'tell application "System Events"\nactivate\n'
+            f'display dialog "{escaped}" with title "{_escape_osascript(title)}" '
+            'buttons {"Dismiss"} default button "Dismiss" with icon caution '
+            "giving up after 60\nend tell"
+        )
+        try:
+            subprocess.run(["osascript", "-e", script], capture_output=True, timeout=70)
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            syslog.syslog(syslog.LOG_WARNING, f"osascript faillock dialog failed: {e}")
+        return
+
+    if not has_display():
+        return
+
+    try:
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import (
+            QApplication,
+            QDialog,
+            QDialogButtonBox,
+            QHBoxLayout,
+            QLabel,
+            QVBoxLayout,
+        )
+
+        os.environ.setdefault("QT_LOGGING_TO_CONSOLE", "0")
+        with _silence_stdio():
+            app = QApplication.instance()
+            if app is None:
+                app = QApplication(sys.argv[:1])
+
+            dialog = QDialog()
+            dialog.setWindowTitle(title)
+            dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+
+            root = QVBoxLayout(dialog)
+            root.setContentsMargins(10, 8, 10, 8)
+            root.setSpacing(6)
+
+            header = QLabel(f"<b>{title}</b>")
+            root.addWidget(header)
+
+            # ``user`` is the live account name (never hardcoded).
+            body = QLabel(
+                f"PAM locked <b>{user}</b> after failed sudo attempts "
+                f"(~{remaining_minutes} min left). Correct password is rejected "
+                "until unlock.<br><br>"
+                "<b>Unlock with Polkit…</b> runs "
+                f"<code>faillock --user {user} --reset</code> as root "
+                "(separate password prompt).<br><br>"
+                "<b>Dismiss</b> waits out the timer."
+            )
+            body.setWordWrap(True)
+            body.setTextFormat(Qt.TextFormat.RichText)
+            body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            root.addWidget(body)
+
+            status = QLabel("")
+            status.setWordWrap(True)
+            status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            status.setStyleSheet("color: #e67e22;")
+            status.hide()
+            root.addWidget(status)
+
+            buttons = QDialogButtonBox()
+            unlock_btn = buttons.addButton(
+                "Unlock with Polkit…", QDialogButtonBox.ButtonRole.ActionRole
+            )
+            dismiss_btn = buttons.addButton(
+                "Dismiss", QDialogButtonBox.ButtonRole.RejectRole
+            )
+            unlock_btn.setDefault(True)
+            unlock_btn.setAutoDefault(True)
+            dismiss_btn.setAutoDefault(False)
+            dismiss_btn.setDefault(False)
+
+            dialog_width = 440
+
+            def refit() -> None:
+                """Grow/shrink cleanly after status appears (avoid fixed-height overlap)."""
+                dialog.setMinimumSize(dialog_width, 0)
+                dialog.setMaximumSize(16777215, 16777215)
+                inner = dialog_width - root.contentsMargins().left() - root.contentsMargins().right()
+                body.setFixedWidth(inner)
+                status.setFixedWidth(inner)
+                app.processEvents()
+                # heightForWidth needs the width constraint above
+                body_h = body.heightForWidth(inner)
+                status_h = status.heightForWidth(inner) if status.isVisible() else 0
+                if body_h < 0:
+                    body_h = body.sizeHint().height()
+                if status_h < 0:
+                    status_h = status.sizeHint().height() if status.isVisible() else 0
+                chrome = (
+                    header.sizeHint().height()
+                    + buttons.sizeHint().height()
+                    + root.contentsMargins().top()
+                    + root.contentsMargins().bottom()
+                    + root.spacing() * (3 if status.isVisible() else 2)
+                    + 8
+                )
+                total_h = chrome + body_h + status_h
+                dialog.setFixedSize(dialog_width, total_h)
+
+            def on_unlock() -> None:
+                status.setText(
+                    "Waiting on Polkit… use the Authentication Required window."
+                )
+                status.show()
+                refit()
+                unlock_btn.setEnabled(False)
+                dismiss_btn.setEnabled(False)
+                app.processEvents()
+                ok, detail = reset_faillock_via_polkit(user)
+                dismiss_btn.setEnabled(True)
+                if ok:
+                    status.setText("Unlocked — close and retry sudo.")
+                    unlock_btn.setEnabled(False)
+                    dismiss_btn.setText("Close")
+                    dismiss_btn.setDefault(True)
+                    syslog.syslog(
+                        syslog.LOG_INFO, f"faillock reset via polkit for {user}"
+                    )
+                else:
+                    # Keep detail short so wrap stays readable
+                    short = (detail or "not authorized").strip()
+                    if len(short) > 160:
+                        short = short[:157] + "…"
+                    status.setText(f"Unlock failed: {short}\nDismiss or try again.")
+                    unlock_btn.setEnabled(True)
+                    syslog.syslog(
+                        syslog.LOG_WARNING,
+                        f"faillock polkit reset failed for {user}: {detail}",
+                    )
+                refit()
+
+            unlock_btn.clicked.connect(on_unlock)
+            dismiss_btn.clicked.connect(dialog.reject)
+
+            btn_row = QHBoxLayout()
+            btn_row.setContentsMargins(0, 2, 0, 0)
+            btn_row.addStretch(1)
+            btn_row.addWidget(buttons)
+            root.addLayout(btn_row)
+
+            # No auto-timeout — user may spend time in the Polkit dialog.
+            refit()
+            unlock_btn.setFocus()
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+            app.exec()
+    except Exception as e:
+        syslog.syslog(syslog.LOG_WARNING, f"PySide6 faillock dialog failed: {e}")
+
+
 def show_dialog(
     user: str,
     host: str,

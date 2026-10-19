@@ -32,11 +32,18 @@ from sudoplz.core import (
     has_age,
     load_config,
     load_totp_secret,
+    pam_faillock_lockout,
     parent_command,
     process_name,
     verify_totp,
 )
-from sudoplz.dialog import has_display, prompt_ssh_passphrase, prompt_sudo_password, show_dialog
+from sudoplz.dialog import (
+    has_display,
+    prompt_ssh_passphrase,
+    prompt_sudo_password,
+    show_dialog,
+    show_faillock_dialog,
+)
 from sudoplz.manager import store_password
 
 try:
@@ -187,6 +194,15 @@ def check_security(config: dict[str, Any], identity: Path | None) -> bool:
         syslog.syslog(syslog.LOG_WARNING, "Askpass called without terminal/SSH env")
         return False
 
+    user = os.environ.get("USER", "unknown")
+    sudo_pid = os.getppid()
+    lockout = pam_faillock_lockout(user)
+    if lockout:
+        syslog.syslog(syslog.LOG_WARNING, lockout.stderr_message)
+        print(f"Error: {lockout.stderr_message}", file=sys.stderr)
+        _notify_faillock_once(sudo_pid, lockout.user, lockout.remaining_minutes)
+        return False
+
     # Expired ciphertext is removed; approval still proceeds so the user can
     # re-enter the password in the GUI instead of a hard security failure.
     expiration_hours = config["expiration_hours"]
@@ -202,9 +218,8 @@ def check_security(config: dict[str, Any], identity: Path | None) -> bool:
                     syslog.syslog(syslog.LOG_WARNING, f"Could not remove expired {blob}: {e}")
 
     if config["require_user_confirmation"]:
-        user = os.environ.get("USER", "unknown")
         host = socket.gethostname()
-        command = parent_command(os.getppid())
+        command = parent_command(sudo_pid)
         explain, body, explicit_body = load_request_context(command)
         if not (explain or "").strip():
             syslog.syslog(
@@ -233,6 +248,23 @@ def check_security(config: dict[str, Any], identity: Path | None) -> bool:
         syslog.syslog(syslog.LOG_INFO, "Sudo access approved by user")
 
     return True
+
+
+def _notify_faillock_once(sudo_pid: int, user: str, remaining_minutes: int) -> None:
+    """Show at most one lockout dialog for this sudo process."""
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    stamp = runtime / "sudoplz" / f"faillock-notified-{sudo_pid}"
+    try:
+        stamp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if stamp.exists():
+            return
+        stamp.write_text(f"{time.time()}\n", encoding="utf-8")
+        stamp.chmod(0o600)
+    except OSError as e:
+        syslog.syslog(syslog.LOG_WARNING, f"faillock notify stamp failed: {e}")
+
+    if has_display() or sys.platform == "darwin":
+        show_faillock_dialog(user, remaining_minutes)
 
 
 def ensure_ssh_key_loaded(priv: Path) -> bool:
@@ -355,6 +387,32 @@ def write_audit_entry(ppid: int, proc: str | None, command: str) -> None:
         syslog.syslog(syslog.LOG_WARNING, f"Could not write audit log: {e}")
 
 
+def _served_stamp(sudo_pid: int) -> Path:
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    return runtime / "sudoplz" / f"served-{sudo_pid}"
+
+
+def _askpass_already_served(sudo_pid: int) -> bool:
+    return _served_stamp(sudo_pid).exists()
+
+
+def _mark_askpass_served(sudo_pid: int) -> None:
+    """One askpass cycle per sudo process — further sudo retries get no UI."""
+    stamp = _served_stamp(sudo_pid)
+    try:
+        stamp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        stamp.write_text(f"{time.time()}\n", encoding="utf-8")
+        stamp.chmod(0o600)
+    except OSError as e:
+        syslog.syslog(syslog.LOG_WARNING, f"Could not write askpass served stamp: {e}")
+
+
+def _emit_password(sudo_pid: int, password: str, via: str) -> None:
+    _mark_askpass_served(sudo_pid)
+    print(password, flush=True)
+    syslog.syslog(syslog.LOG_INFO, via)
+
+
 def main() -> None:
     syslog.openlog("sudoplz")
     repair_environment()
@@ -363,16 +421,26 @@ def main() -> None:
         print("Error: environment validation failed", file=sys.stderr)
         sys.exit(1)
 
+    sudo_pid = os.getppid()
+    if _askpass_already_served(sudo_pid):
+        # sudo re-invoked askpass after a failed password — do not prompt again.
+        print("Error: askpass already used for this sudo; giving up", file=sys.stderr)
+        syslog.syslog(
+            syslog.LOG_WARNING,
+            f"Askpass refuse re-entry for sudo pid {sudo_pid}",
+        )
+        sys.exit(1)
+
     config = load_config()
     priv, _, key_type = find_ssh_key()
 
     if not check_security(config, priv):
+        _mark_askpass_served(sudo_pid)
         print("Error: security check failed", file=sys.stderr)
         syslog.syslog(syslog.LOG_ERR, "Security check failed")
         sys.exit(1)
 
-    ppid = os.getppid()
-    write_audit_entry(ppid, process_name(ppid), parent_command(ppid))
+    write_audit_entry(sudo_pid, process_name(sudo_pid), parent_command(sudo_pid))
 
     # Priority 1: age-encrypted file (Ed25519).
     # After Allow: unlock key via PySide6 if needed, then decrypt.
@@ -380,16 +448,18 @@ def main() -> None:
         ensure_ssh_key_loaded(priv)
         password = age_decrypt(AGE_ENCRYPTED_FILE.read_bytes(), priv)
         if password:
-            print(password)
-            syslog.syslog(syslog.LOG_INFO, f"Password retrieved via age ({key_type} key)")
+            _emit_password(
+                sudo_pid, password, f"Password retrieved via age ({key_type} key)"
+            )
             return
 
     # Priority 2: OpenSSL-encrypted file (RSA / ECDSA / DSA).
     if SSH_ENCRYPTED_FILE.exists() and priv and key_type and key_type != "Ed25519":
         password = decrypt_with_openssl(SSH_ENCRYPTED_FILE, priv, key_type)
         if password:
-            print(password)
-            syslog.syslog(syslog.LOG_INFO, f"Password retrieved via SSH ({key_type} key)")
+            _emit_password(
+                sudo_pid, password, f"Password retrieved via SSH ({key_type} key)"
+            )
             return
 
     # Priority 3: system keyring.
@@ -397,13 +467,13 @@ def main() -> None:
         try:
             password = keyring.get_password(SERVICE_NAME, USERNAME)
             if password:
-                print(password)
-                syslog.syslog(syslog.LOG_INFO, "Password retrieved via keyring")
+                _emit_password(sudo_pid, password, "Password retrieved via keyring")
                 return
         except Exception as e:
             syslog.syslog(syslog.LOG_WARNING, f"Keyring lookup failed: {e}")
 
     # Priority 4: GUI re-prompt after Allow (missing / expired / unreadable store).
+    # Enter+confirm lives in this single askpass cycle — not a sudo retry.
     reason = (
         "No encrypted sudo password is available (missing or expired). "
         "Enter it to save with your SSH key and continue this command."
@@ -413,16 +483,22 @@ def main() -> None:
         if password:
             priv, pub, key_type = find_ssh_key()
             if store_password(password, priv, pub, key_type, quiet=True):
-                print(password)
-                syslog.syslog(syslog.LOG_INFO, "Password stored via askpass re-prompt and returned")
+                _emit_password(
+                    sudo_pid,
+                    password,
+                    "Password stored via askpass re-prompt and returned",
+                )
                 return
+            _mark_askpass_served(sudo_pid)
             print("Error: could not store sudo password", file=sys.stderr)
             syslog.syslog(syslog.LOG_ERR, "Askpass re-prompt store_password failed")
             sys.exit(1)
+        _mark_askpass_served(sudo_pid)
         print("Error: sudo password entry cancelled", file=sys.stderr)
         syslog.syslog(syslog.LOG_WARNING, "Askpass re-prompt cancelled")
         sys.exit(1)
 
+    _mark_askpass_served(sudo_pid)
     print("Error: no password found in secure storage", file=sys.stderr)
     print("Use 'sudoplz set' to store the password securely", file=sys.stderr)
     syslog.syslog(syslog.LOG_ERR, "No password found in secure storage")

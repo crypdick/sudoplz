@@ -7,10 +7,13 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import struct
 import subprocess
 import syslog
 import time
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -183,6 +186,112 @@ def process_name(pid: int) -> str | None:
         return os.path.basename(out.decode().strip())
     except subprocess.CalledProcessError:
         return None
+
+
+_FAILLOCK_LINE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+\S+.*\s+V\s*$"
+)
+
+
+def _faillock_limits() -> tuple[int, int]:
+    """Return (deny, unlock_time_seconds) from faillock.conf or PAM defaults."""
+    deny, unlock_time = 3, 600
+    conf = Path("/etc/security/faillock.conf")
+    if not conf.is_file():
+        return deny, unlock_time
+    try:
+        for raw in conf.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if not line or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key, value = key.strip(), value.strip()
+            if key == "deny":
+                deny = int(value)
+            elif key == "unlock_time":
+                unlock_time = int(value)
+    except (OSError, ValueError) as e:
+        syslog.syslog(syslog.LOG_WARNING, f"Could not parse {conf}: {e}")
+    return deny, unlock_time
+
+
+@dataclass(frozen=True)
+class FaillockLockout:
+    """Active pam_faillock lock for a user."""
+
+    user: str
+    remaining_minutes: int
+
+    @property
+    def stderr_message(self) -> str:
+        return (
+            f"pam_faillock: account '{self.user}' is locked "
+            f"(~{self.remaining_minutes} min left)."
+        )
+
+
+def pam_faillock_lockout(user: str) -> FaillockLockout | None:
+    """If pam_faillock is locking ``user``, return lockout details; else None."""
+    if not user or user in {"unknown", "root"}:
+        return None
+
+    deny, unlock_time = _faillock_limits()
+    try:
+        result = subprocess.run(
+            ["faillock", "--user", user],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        syslog.syslog(syslog.LOG_INFO, f"faillock check skipped: {e}")
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    failures: list[datetime] = []
+    for line in result.stdout.splitlines():
+        match = _FAILLOCK_LINE.match(line.strip())
+        if not match:
+            continue
+        try:
+            failures.append(datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S"))
+        except ValueError:
+            continue
+
+    if len(failures) < deny:
+        return None
+
+    latest = max(failures)
+    age = (datetime.now() - latest).total_seconds()
+    if age < 0 or age > unlock_time:
+        return None
+
+    remaining_min = max(1, int((unlock_time - age + 59) // 60))
+    return FaillockLockout(user=user, remaining_minutes=remaining_min)
+
+
+def reset_faillock_via_polkit(user: str) -> tuple[bool, str]:
+    """Run ``pkexec faillock --user … --reset``. Return (ok, detail)."""
+    try:
+        result = subprocess.run(
+            ["pkexec", "faillock", "--user", user, "--reset"],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except FileNotFoundError:
+        return False, "pkexec not found (install polkit)."
+    except subprocess.TimeoutExpired:
+        return False, "Polkit unlock timed out."
+
+    detail = (result.stderr or result.stdout or "").strip()
+    if result.returncode == 0:
+        return True, detail or "faillock reset ok"
+    if result.returncode == 126 or result.returncode == 127:
+        return False, detail or "Polkit unlock cancelled or denied."
+    return False, detail or f"faillock reset failed (exit {result.returncode})"
 
 
 def parent_command(pid: int) -> str:

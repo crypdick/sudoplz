@@ -62,6 +62,28 @@ class SudoAskpassHookTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIsNone(self.check(command))
 
+    def test_heredoc_data_is_ignored(self) -> None:
+        for command in (
+            "cat > s.sh <<EOF\nsudo -n apt-get update\nEOF",
+            "cat > s.sh <<'EOF'\nsudo apt update; echo $HOME\nEOF\nchmod +x s.sh",
+            "ssh host <<EOF\nsudo apt update\nEOF",
+            "cat <<-EOF\n\tsudo apt update\n\tEOF",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.check(command))
+
+    def test_shell_input_and_substitutions_are_inspected(self) -> None:
+        for command in (
+            "bash <<EOF\nsudo apt update\nEOF",
+            "sh -s <<'EOF'\necho $HOME\nsudo -n apt update\nEOF",
+            "cat <<EOF\n$(sudo apt update)\nEOF",
+            "echo \"$(sudo apt update)\"",
+            "env -i sudo apt update",
+        ):
+            with self.subTest(command=command):
+                self.assertIn("sudo -A", self.check(command))
+        self.assertIsNone(self.check("bash <<EOF\nsudo -A apt update\nEOF"))
+
     def test_other_events_are_ignored(self) -> None:
         result = subprocess.run(
             [sys.executable, str(CHECKER)],

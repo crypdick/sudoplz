@@ -30,3 +30,5 @@ sudoplz gives AI coding agents (Claude Code, Cursor, etc.) the ability to run `s
 5. **Commits**:
    - Only commit when explicitly requested
    - Follow existing commit style from git history
+   - Don't bump patch versions or tag releases; CI does both on push to `main`
+     (see README.md, Releases)

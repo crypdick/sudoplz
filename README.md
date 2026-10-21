@@ -188,6 +188,20 @@ uv run python -m unittest discover -s tests -v
 
 Tests use temporary SSH keys, dummy credentials, and an in-memory keyring.
 
+## Releases
+
+`.github/workflows/publish.yml` runs the checks on pull requests. Each
+successful push to `main` publishes a release to PyPI and creates a tagged
+GitHub release with the wheel and source distribution. Manual workflow
+dispatch retries a release without another commit.
+
+CI owns patch versions: it keeps an unpublished version from `pyproject.toml`,
+otherwise it increments the latest PyPI patch version and commits
+`pyproject.toml` and `uv.lock`. Use `uv version --bump minor` or
+`uv version --bump major` for an intentional version change. Publishing uses
+[PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/) for
+workflow `publish.yml`; GitHub stores no PyPI token.
+
 ## Credits
 
 The idea — an SSH-key-encrypted sudo password served via `SUDO_ASKPASS`, gated by a confirmation dialog — is from [GlassOnTin/secure-askpass](https://github.com/GlassOnTin/secure-askpass). That project is dormant; `sudoplz` is a substantially rewritten and cleaned up fork. Thanks to [@GlassOnTin](https://github.com/GlassOnTin) for the original idea.

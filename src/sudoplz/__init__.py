@@ -1,3 +1,5 @@
 """Secure SSH-key-encrypted askpass helper for sudo."""
 
-__version__ = "0.5.1"
+from importlib.metadata import version
+
+__version__ = version("sudoplz")

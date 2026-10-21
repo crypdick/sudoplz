@@ -1,27 +1,191 @@
-name: Publish to PyPI
+name: Publish release
 
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: publish-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
 jobs:
-  publish:
+  quality:
+    name: Run quality gates
     runs-on: ubuntu-latest
-    # Required for PyPI trusted publishing (OIDC).
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install test tools
+        run: sudo apt-get update && sudo apt-get install -y age shfmt
+
+      - name: Install locked dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Run all quality gates
+        run: |
+          uv run ruff check .
+          uv run mypy src
+          uv run python -m unittest discover -s tests -v
+          uv build
+
+  prepare:
+    name: Prepare release version
+    needs: quality
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      publish: ${{ steps.version.outputs.state != 'stale' }}
+      version: ${{ steps.version.outputs.version }}
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - name: Check out current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Prepare release version
+        id: version
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: python scripts/prepare_release.py --source "$SOURCE_SHA"
+
+      - name: Verify release version
+        if: steps.version.outputs.state != 'stale'
+        run: |
+          uv sync --locked --all-groups
+
+      - name: Commit release version
+        id: commit
+        if: steps.version.outputs.state != 'stale'
+        env:
+          RELEASE_STATE: ${{ steps.version.outputs.state }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          if [[ "$RELEASE_STATE" == 'new' ]]; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add pyproject.toml uv.lock
+            git commit --allow-empty -m "Release $RELEASE_VERSION" -m "Source-Commit: $SOURCE_SHA"
+            git push origin HEAD:main
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build distributions
+    needs: [prepare, quality]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build package
+        run: uv build
+
+      - name: Validate distribution metadata
+        run: uvx --from twine twine check --strict dist/*
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: |
+            dist/*.tar.gz
+            dist/*.whl
+          if-no-files-found: error
+
+  publish:
+    name: Publish distributions
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - name: Download distributions
+        uses: actions/download-artifact@v8
         with:
-          enable-cache: true
-
-      - name: Build wheel and sdist
-        run: uv build
+          name: dist
+          path: dist/
 
       - name: Publish to PyPI
-        run: uv publish --trusted-publishing automatic
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+
+  release:
+    name: Create GitHub release
+    needs: [prepare, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source and tags
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          tag="v${VERSION}"
+          if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
+            tag_sha="$(git rev-list -n 1 "${tag}")"
+            if [[ "${tag_sha}" != "${RELEASE_SHA}" ]]; then
+              echo "${tag} already points to ${tag_sha}, expected ${RELEASE_SHA}" >&2
+              exit 1
+            fi
+          fi
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            echo "GitHub release ${tag} already exists"
+            exit 0
+          fi
+          gh release create "${tag}" dist/* \
+            --generate-notes \
+            --target "${RELEASE_SHA}" \
+            --title "${tag}"

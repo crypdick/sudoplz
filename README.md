@@ -61,8 +61,9 @@ sudoplz test
 
 ### Agent reminder with i-insist
 
-If you use [i-insist](https://github.com/crypdick/i-insist), install its hooks,
-then install the optional global rule and its checker:
+If you use [i-insist](https://github.com/crypdick/i-insist), install its hooks
+and [`shfmt`](https://github.com/mvdan/sh), then install the optional global
+rule and its checker:
 
 ```bash
 i-insist ensure
@@ -74,9 +75,10 @@ cp hooks/i-insist.toml ~/.i-insist/sudoplz.toml
 The rule blocks local shell commands that invoke `sudo` without `-A` or
 `--askpass` and tells the agent how to use sudoplz. It ignores quoted command
 strings, including `ssh host 'sudo apt update'`, since sudo runs on the remote
-host. It also ignores `sudo` passed as data to another command. This is a
-convenience check for ordinary shell calls, not a complete shell parser or a
-security boundary. i-insist's configuration protection requires human approval
+host. It also ignores `sudo` passed as data to another command, including
+heredoc bodies, except heredocs fed to `sh`, `bash`, `zsh`, or `dash`. Without
+`shfmt` or on a syntax error, the rule allows the command. This is a
+convenience check for ordinary shell calls, not a security boundary. i-insist's configuration protection requires human approval
 before copying the rule.
 
 ## Security

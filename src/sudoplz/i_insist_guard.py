@@ -8,8 +8,10 @@ from pathlib import Path
 from typing import Any
 
 MESSAGE = (
-    "Local sudo needs sudoplz approval. Use `sudo -A <command>` without `-n`. "
-    "Set `SUDO_ASKPASS` to the `askpass` executable; if no credential is stored, "
+    "Local sudo needs sudoplz approval. Use `sudoplz <command>` without `-n`; "
+    "sudoplz sets SUDO_ASKPASS and runs sudo -k -A. "
+    "Use `sudoplz -- <command>` if the command name matches a management command. "
+    "If no credential is stored, "
     "ask the user to run `sudoplz set` interactively."
 )
 WRAPPERS = {"env", "command", "exec", "nohup"}

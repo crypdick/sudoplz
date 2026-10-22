@@ -18,7 +18,7 @@ Coding agents can't handle interactive terminal prompts. Ask Claude Code to run 
 - **`/etc/sudoers` allowlists** require predicting which commands the agent needs. They don't provide case-by-case approval.
 - **Manual copy-paste** is tedious and breaks the agent's flow.
 
-`sudoplz` sets up the askpass helper and runs `sudo -k -A` for you. The `-k` option ignores cached sudo credentials so each command that requires a password goes through approval. Your sudo policy still controls which commands you can run. Rules that allow execution without a password, such as `NOPASSWD`, bypass askpass and its approval dialog.
+`sudoplz` sets up the askpass helper and runs `sudo -k -A` for you. The `-k` option ignores cached sudo credentials. Your sudo policy still controls authentication and which commands you can run. Passwordless rules such as `NOPASSWD` and alternative authentication methods such as fingerprint readers can bypass askpass and its approval dialog. On Linux, [configure password-only authentication](#fingerprint-authentication-on-linux) if your sudo PAM policy supports biometrics.
 
 This threat model assumes a personal workstation with an encrypted disk and a passphrase-protected SSH key. Not appropriate for shared or production systems.
 
@@ -42,6 +42,7 @@ This threat model assumes a personal workstation with an encrypted disk and a pa
    ```bash
    sudoplz set
    ```
+6. If sudo supports fingerprint authentication on Linux, [configure a password-only PAM service](#fingerprint-authentication-on-linux) before relying on approval dialogs.
 
 ## Usage
 
@@ -85,6 +86,52 @@ sudo -k -A apt install foo
 ```
 
 Add the export to your shell startup file if you need it across sessions. The `sudoplz` command sets this variable automatically. Using `sudo -A` without `-k` can reuse cached credentials and skip approval.
+
+### Fingerprint authentication on Linux
+
+`sudo -A` selects how sudo reads a password. It doesn't force PAM to request one. If sudo's PAM stack accepts a fingerprint first, sudo can execute the command without calling askpass. No sudoplz command-line option can override that root-owned authentication policy.
+
+Sudo 1.9.9 and later support [`pam_askpass_service`](https://www.sudo.ws/docs/man/sudoers.man/#pam_askpass_service), which selects a separate PAM service for `-A` calls. Configure that service to require a password. Ordinary sudo calls keep their existing authentication policy.
+
+For Debian or Ubuntu with local Unix accounts:
+
+1. Keep a working administrator session open while changing authentication. Copy the existing sudo PAM service:
+
+   ```bash
+   sudoplz cp /etc/pam.d/sudo /etc/pam.d/sudoplz-askpass
+   sudoplz -e /etc/pam.d/sudoplz-askpass
+   ```
+
+2. In the copied file, replace `@include common-auth` with password authentication:
+
+   ```text
+   auth required pam_unix.so
+   ```
+
+   Keep the account and session rules from the original sudo service. Don't include an authentication stack that enables fingerprint readers. If your account uses SSSD, LDAP, MFA, or additional authentication modules, have your administrator build a password-only stack that preserves those requirements instead of using this local-account example. When copying an existing stack, review numeric jump counts after removing modules. Review copied rules again after system PAM policy updates.
+
+3. Create a sudoers drop-in with `visudo`:
+
+   ```bash
+   sudoplz visudo -f /etc/sudoers.d/sudoplz-askpass
+   ```
+
+   Set the service for your account, replacing `YOUR_USERNAME` with your username:
+
+   ```text
+   Defaults:YOUR_USERNAME pam_askpass_service="sudoplz-askpass"
+   ```
+
+4. Validate sudoers, then test a fresh invocation:
+
+   ```bash
+   sudoplz visudo -c
+   sudoplz echo hi
+   ```
+
+   The test must show the sudoplz approval dialog without a fingerprint prompt. Deny approval and confirm that `hi` isn't printed. Initial setup uses your existing authentication policy until the drop-in is installed.
+
+To undo the change, remove `/etc/sudoers.d/sudoplz-askpass` first, then `/etc/pam.d/sudoplz-askpass`, using your administrator session. Other distributions have different PAM layouts; use their password authentication stack rather than copying this example.
 
 ### Agent reminder with i-insist
 

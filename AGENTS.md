@@ -1,11 +1,11 @@
-# sudoplz Project Guidelines
+# sudoplz project guidelines
 
-## Project Overview
+## Project overview
 sudoplz gives AI coding agents (Claude Code, Cursor, etc.) the ability to run `sudo` commands with case-by-case GUI approval. The sudo password is encrypted with the user's SSH key. The project ships two entry points:
 - `askpass` - Invoked by `sudo -A` via `SUDO_ASKPASS`; performs security checks and prints the decrypted password on approval
-- `sudoplz` - Management CLI (set/get/clear/test/audit, plus TOTP for headless sessions)
+- `sudoplz` - Runs commands through `sudo -k -A` with automatic `SUDO_ASKPASS` setup; also manages credentials (set/get/rm-stored-password/test/audit, plus TOTP for headless sessions). Use `--` to run executables whose names match management commands.
 
-## Development Guidelines
+## Development guidelines
 
 1. **Tool Usage**:
    - Use `bash` commands directly for basic operations
@@ -19,7 +19,7 @@ sudoplz gives AI coding agents (Claude Code, Cursor, etc.) the ability to run `s
 
 3. **Testing**:
    - Test both `askpass` and `sudoplz` components
-   - Verify SSH key encryption/decryption functionality
+   - Verify SSH key encryption and decryption
    - Ensure secure password handling
 
 4. **Security**:

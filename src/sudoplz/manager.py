@@ -1,4 +1,4 @@
-"""sudoplz — CLI to store, inspect, and clear sudo passwords."""
+"""Run commands through askpass and manage stored sudo credentials."""
 
 from __future__ import annotations
 
@@ -134,20 +134,22 @@ def cmd_clear(_args: argparse.Namespace) -> bool:
     return True
 
 
-def cmd_test(_args: argparse.Namespace) -> bool:
-    askpass = shutil.which("askpass")
+def sudo_environment() -> dict[str, str]:
+    askpass = shutil.which("askpass", path=str(Path(sys.executable).parent)) or shutil.which(
+        "askpass"
+    )
     if not askpass:
-        print(
-            "Error: 'askpass' not on PATH. Install with 'uv tool install .' first.",
-            file=sys.stderr,
-        )
-        return False
-
+        raise FileNotFoundError("'askpass' not found. Install sudoplz with 'uv tool install .'.")
     env = os.environ.copy()
     env["SUDO_ASKPASS"] = askpass
-    print(f"Testing sudo -A with {askpass}...")
+    return env
+
+
+def cmd_test(_args: argparse.Namespace) -> bool:
+    env = sudo_environment()
+    print(f"Testing sudo -k -A with {env['SUDO_ASKPASS']}...")
     result = subprocess.run(
-        ["sudo", "-A", "echo", "Success!"], env=env, capture_output=True, text=True
+        ["sudo", "-k", "-A", "echo", "Success!"], env=env, capture_output=True, text=True
     )
     if result.returncode == 0:
         print(f"Test successful: {result.stdout.strip()}")
@@ -209,7 +211,9 @@ def cmd_audit(_args: argparse.Namespace) -> bool:
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="sudoplz",
-        description="Manage secure sudo password storage.",
+        description="Run commands with sudo approval or manage stored credentials.",
+        epilog="Run: sudoplz [sudo options] command [args ...]. "
+        "Use sudoplz -- command to run a command whose name matches a management command.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
     commands = [
@@ -217,7 +221,7 @@ def main() -> None:
         ("set-totp", "Store sudo password with TOTP (headless)", cmd_set_totp),
         ("totp-setup", "Generate TOTP secret for headless entry", cmd_totp_setup),
         ("get", "Check whether a password is stored", cmd_get),
-        ("clear", "Remove stored passwords", cmd_clear),
+        ("rm-stored-password", "Remove stored passwords", cmd_clear),
         ("test", "Test sudo -A integration", cmd_test),
         ("audit", "Show recent askpass usage", cmd_audit),
     ]
@@ -241,8 +245,14 @@ def main() -> None:
     )
     config_parser.set_defaults(func=cmd_config)
 
-    args = parser.parse_args()
     try:
+        arguments = sys.argv[1:]
+        management_names = {name for name, _, _ in commands} | {"config", "-h", "--help"}
+        if arguments and arguments[0] not in management_names:
+            if arguments == ["--"]:
+                parser.error("expected a command after --")
+            os.execvpe("sudo", ["sudo", "-k", "-A", *arguments], sudo_environment())
+        args = parser.parse_args(arguments)
         succeeded = args.func(args)
     except (OSError, ValueError, subprocess.SubprocessError, keyring.errors.KeyringError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

@@ -376,6 +376,6 @@ class CredentialTests(unittest.TestCase):
         approved = run("sudoplz.askpass")
         self.assertEqual(approved.returncode, 0, approved.stderr)
         self.assertEqual(approved.stdout, " fixture \n")
-        cleared = run("sudoplz.manager", "clear")
+        cleared = run("sudoplz.manager", "rm-stored-password")
         self.assertEqual(cleared.returncode, 0, cleared.stderr)
         self.assertEqual(run("sudoplz.manager", "get").returncode, 1)

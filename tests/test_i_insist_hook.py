@@ -32,10 +32,13 @@ class SudoAskpassHookTests(unittest.TestCase):
             "echo ready # skip this\nsudo apt update",
         ):
             with self.subTest(command=command):
-                self.assertIn("sudo -A", self.check(command))
+                self.assertIn("sudoplz <command>", self.check(command))
 
     def test_askpass_option_allows_local_sudo(self) -> None:
         for command in (
+            "sudoplz apt update",
+            "sudoplz -u root apt update",
+            "sudoplz -- test -f /fixture",
             "sudo -A apt update",
             "sudo --askpass apt update",
             "sudo -u root -A apt update",
@@ -46,8 +49,8 @@ class SudoAskpassHookTests(unittest.TestCase):
                 self.assertIsNone(self.check(command))
 
     def test_options_without_effective_askpass_are_blocked(self) -> None:
-        self.assertIn("sudo -A", self.check("sudo -nA apt update"))
-        self.assertIn("sudo -A", self.check("sudo -pA apt update"))
+        self.assertIn("sudoplz <command>", self.check("sudo -nA apt update"))
+        self.assertIn("sudoplz <command>", self.check("sudo -pA apt update"))
 
     def test_quoted_or_noncommand_sudo_is_ignored(self) -> None:
         for command in (
@@ -81,7 +84,7 @@ class SudoAskpassHookTests(unittest.TestCase):
             "env -i sudo apt update",
         ):
             with self.subTest(command=command):
-                self.assertIn("sudo -A", self.check(command))
+                self.assertIn("sudoplz <command>", self.check(command))
         self.assertIsNone(self.check("bash <<EOF\nsudo -A apt update\nEOF"))
 
     def test_other_events_are_ignored(self) -> None:

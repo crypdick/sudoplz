@@ -1,8 +1,12 @@
 # sudoplz
 
-Give Claude Code, Cursor, and other AI coding agents the ability to run `sudo` — with case-by-case GUI approval, no passwordless sudo, no `/etc/sudoers` allowlists.
+Run privileged commands from Claude Code, Cursor, and other AI coding agents with GUI approval:
 
-Your sudo password is encrypted to your SSH public key and only decrypted after you approve a dialog showing the exact command about to run. Deny the dialog and nothing happens.
+```bash
+sudoplz apt install foo
+```
+
+sudoplz encrypts your sudo password to your SSH public key and decrypts it after you approve a dialog showing the command. If you deny the dialog, sudo authentication fails.
 
 ![Sudo approval dialog showing a command about to run, with Deny and Allow buttons](assets/screenshot.png)
 
@@ -10,11 +14,11 @@ Your sudo password is encrypted to your SSH public key and only decrypted after 
 
 Coding agents can't handle interactive terminal prompts. Ask Claude Code to run `sudo apt install foo` and you get `sudo: Authentication failed`. The common workarounds all have problems:
 
-- **Passwordless sudo** gives the agent — and anything else running as your user — unrestricted root.
-- **`/etc/sudoers` allowlists** require predicting every command the agent will ever need. No case-by-case review.
+- **Passwordless sudo** gives the agent and anything else running as your user the privileges allowed by your sudo policy without approval.
+- **`/etc/sudoers` allowlists** require predicting which commands the agent needs. They don't provide case-by-case approval.
 - **Manual copy-paste** is tedious and breaks the agent's flow.
 
-`sudoplz` plugs into `sudo -A`, so the agent runs `sudo -A <command>`, you see a dialog with the exact command, and you click Allow or Deny. Works for any command without pre-declaring what's permitted.
+`sudoplz` sets up the askpass helper and runs `sudo -k -A` for you. The `-k` option ignores cached sudo credentials so each command that requires a password goes through approval. Your sudo policy still controls which commands you can run. Rules that allow execution without a password, such as `NOPASSWD`, bypass askpass and its approval dialog.
 
 This threat model assumes a personal workstation with an encrypted disk and a passphrase-protected SSH key. Not appropriate for shared or production systems.
 
@@ -33,31 +37,54 @@ This threat model assumes a personal workstation with an encrypted disk and a pa
    ```bash
    uv tool install sudoplz
    ```
-   This puts `askpass` and `sudoplz` on your PATH. (For development: clone the repo and run `uv tool install .` instead.)
-5. Point `SUDO_ASKPASS` at the installed binary (add to `~/.bashrc`, `~/.zshrc`, etc.):
-   ```bash
-   export SUDO_ASKPASS="$(which askpass)"
-   ```
-6. Store your sudo password:
+   This puts `askpass` and `sudoplz` on your `PATH`. For development, clone the repository and use `uv tool install .` instead.
+5. Store your sudo password:
    ```bash
    sudoplz set
    ```
 
 ## Usage
 
-Your agent (or you) runs `sudo -A <command>`. A dialog pops up showing the command. You approve or deny.
+Run a command with `sudoplz`, then approve or deny the dialog:
 
 ```bash
-sudo -A apt install foo
+sudoplz apt install foo
 ```
 
-Gotcha: `sudo -n` explicitly disallows prompting and will never trigger askpass. Always use `-A`.
+Sudo options pass through to sudo. For example, to run as another user:
+
+```bash
+sudoplz -u postgres psql
+```
+
+Arguments, standard input, output, signals, and exit status pass through to sudo. Shell quoting works as usual. A pipeline or redirection outside the command still runs in your shell.
+
+Management commands such as `set`, `get`, `test`, `config`, and `audit` keep their meaning. Use `--` before an executable whose name matches a management command:
+
+```bash
+sudoplz -- test -f /etc/shadow
+```
+
+`sudoplz rm-stored-password` removes stored credentials. It replaces the former `sudoplz clear` command. `sudoplz clear` runs the terminal's `clear` executable through sudo.
+
+Avoid `-n` (`--non-interactive`) and `-S` (`--stdin`): they conflict with askpass prompting. Use `sudoplz --help` for management help and `sudo --help` for sudo options.
 
 Test the integration with:
 
 ```bash
 sudoplz test
 ```
+
+### Direct sudo integration
+
+For tools that invoke sudo directly, set `SUDO_ASKPASS` in their environment:
+
+```bash
+export SUDO_ASKPASS="$(command -v askpass)"
+sudo -k -A apt install foo
+```
+
+Add the export to your shell startup file if you need it across sessions. The `sudoplz` command sets this variable automatically. Using `sudo -A` without `-k` can reuse cached credentials and skip approval.
 
 ### Agent reminder with i-insist
 
@@ -73,13 +100,14 @@ cp hooks/i-insist.toml ~/.i-insist/sudoplz.toml
 ```
 
 The rule blocks local shell commands that invoke `sudo` without `-A` or
-`--askpass` and tells the agent how to use sudoplz. It ignores quoted command
-strings, including `ssh host 'sudo apt update'`, since sudo runs on the remote
+`--askpass` and recommends `sudoplz <command>`. Calls to `sudoplz` pass through.
+It also blocks sudo's `-n` and `--non-interactive` options even with askpass enabled.
+It ignores quoted command strings, including `ssh host 'sudo apt update'`, since sudo runs on the remote
 host. It also ignores `sudo` passed as data to another command, including
 heredoc bodies, except heredocs fed to `sh`, `bash`, `zsh`, or `dash`. Without
 `shfmt` or on a syntax error, the rule allows the command. This is a
 convenience check for ordinary shell calls, not a security boundary. i-insist's configuration protection requires human approval
-before copying the rule.
+before copying the rule. After upgrading sudoplz, copy the checker again to update the installed warning.
 
 ## Security
 
@@ -106,11 +134,11 @@ expiration enabled. Keep the original SSH key available during migration.
 
 Encryption alone doesn't cover every abuse path — anything running as your user can in principle request decryption. The askpass script runs these checks on every invocation; any failure means no decryption:
 
-- **Caller path whitelist.** Only decrypts when the caller's working directory is on an allowlist (home, `/tmp`, etc.). Blocks invocations from unexpected locations like `/var/tmp/malicious`.
-- **Caller process whitelist.** Parent process must be on an allowlist (sudo, your shell, your IDE, your deploy tool). Keeps arbitrary binaries from invoking askpass directly.
+- **Caller path allowlist.** Only decrypts when the caller's working directory is on an allowlist (home, `/tmp`, etc.). Blocks invocations from unexpected locations like `/var/tmp/malicious`.
+- **Caller process allowlist.** Parent process must be on an allowlist (sudo, your shell, your IDE, your deploy tool). Keeps arbitrary binaries from invoking askpass directly.
 - **User confirmation.** A GUI dialog asks for approval on each decryption, so any sudo elevation you didn't initiate is visible and can be denied.
 - **Rate limiting.** Configurable max-attempts-per-hour and lockout window. Contains runaway scripts and brute-force attempts.
-- **Password expiration.** Retrieval is refused after the configured age (default: 1 week), including keyring credentials. Expiration does not destroy stored data or revoke stolen copies; use `sudoplz clear` to remove stored credentials.
+- **Password expiration.** Retrieval is refused after the configured age (default: 1 week), including keyring credentials. Expiration does not destroy stored data or revoke stolen copies; use `sudoplz rm-stored-password` to remove stored credentials.
 
 Configure these in `~/.config/sudoplz/config.json` — an example is shipped as `askpass-config.json` in the repo; copy it and edit. Unknown settings, invalid types, and invalid ranges are rejected; malformed policy never silently falls back to defaults.
 
@@ -133,20 +161,22 @@ A fully non-interactive session cannot unlock a passphrase-protected key. Supply
 
 ## Commands
 
+Manage stored credentials and inspect configuration:
+
 ```bash
-sudoplz set        # Store password (terminal prompt; expires per config, 1 week default)
-sudoplz set-totp   # Store password with TOTP verification (headless)
-sudoplz totp-setup # Set up TOTP for headless sessions
-sudoplz get        # Check if password exists
-sudoplz clear      # Remove password
-sudoplz test       # Test sudo integration
-sudoplz config --show  # View validated policy
-sudoplz audit      # Show recent askpass usage
+sudoplz set                # Store password; default expiration is 1 week
+sudoplz set-totp           # Store password with TOTP verification (headless)
+sudoplz totp-setup         # Set up TOTP for headless sessions
+sudoplz get                # Check if password exists
+sudoplz rm-stored-password # Remove password
+sudoplz test               # Test sudo integration
+sudoplz config --show      # View validated policy
+sudoplz audit              # Show recent askpass usage
 ```
 
 ## Headless/SSH usage with TOTP
 
-For servers or SSH sessions without a display, authenticate with TOTP.
+For servers or SSH sessions without a display, authenticate with a time-based one-time password (TOTP).
 
 ### Initial setup (run once from a GUI session)
 
@@ -166,14 +196,14 @@ Enter your 6-digit TOTP code, then your password.
 
 ### Using sudo with TOTP
 
-When `DISPLAY` isn't set, askpass prompts for a TOTP code:
+On Linux without `DISPLAY`, askpass prompts for a TOTP code:
 
 ```bash
 # Interactive — prompts for TOTP code
-sudo -A command
+sudoplz command
 
 # Non-interactive — pass TOTP via environment
-TOTP="123456" sudo -A command
+TOTP="123456" sudoplz command
 ```
 
 ## Development checks
